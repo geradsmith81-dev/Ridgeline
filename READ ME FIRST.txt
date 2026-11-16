@@ -1,0 +1,64 @@
+RIDGELINE - find where a landscape photo was taken from its skyline
+=====================================================================
+
+WHAT IT DOES
+  * Reads the skyline (the line where land meets sky) in a colour or black-and-white photo.
+  * Asks you where you think the photo was taken, then works out the real skyline seen from
+    thousands of places around that spot, using open elevation data (out to 120 km, with the
+    curvature of the Earth and the bending of light by the air), as in Afterglow.
+  * Compares the photo's skyline with each of them in every compass direction, and shows the
+    best-fitting places on a map with the direction the camera was facing, how much it was
+    tilted, and how wide the lens was.
+  * Draws the skyline the elevation model predicts on top of your photo, so you can see for
+    yourself whether the match is real.
+
+FIRST START (Windows)
+  1. Python must be installed once: https://www.python.org/downloads/
+     On the first installer screen tick "Add python.exe to PATH".
+  2. Double-click "Start app.bat".
+     The first time it installs the app's parts (2-5 minutes, needs internet).
+  3. The app opens in its own window (address http://localhost:8512).
+     Keep the small black window open while you use the app; close it to stop the app.
+  4. At the end of the first-time setup a Ridgeline icon is put on your Desktop and in the Start
+     menu. If it is missing (or you move the folder), double-click "Create desktop icon.bat".
+  5. Phones and tablets: open the Ridgeline launcher page (see the GitHub instructions) and choose
+     "Add to Home Screen" for a Ridgeline icon that opens the online app.
+
+USING IT
+  1. Choose a photo: "From this device" (on a phone this opens the photo library), or
+     "From Google Drive": paste the link of a folder or picture that is shared as
+     "Anyone with the link" (Share > General access), press "Open link" and pick a picture.
+  2. Say where the search should start: type a town, valley, park, peak or coordinates, or tap
+     the map. Choose how far around it to search (2-30 km). Larger areas take longer.
+  3. Check the orange skyline line on the photo. Use the tools above the photo:
+       Draw skyline - drag along the true skyline where the line is wrong;
+       Not skyline  - drag sideways across trees, buildings, poles or clouds that hide the hills;
+       Is skyline   - use a stretch again;  Undo.
+     Then say how wide the view is. Camera data from the original photo is best; if the picture
+     was cropped or you do not know, choose "Not known" and the app tries 20 to 90 degrees.
+  4. Press "Search for the place". A search of 10-12 km around a point takes about 2-3 minutes.
+  5. Results: a verdict (Strong / Possible / Unsure), a heat map of how well each place fits,
+     numbered best places (tap one), the view cone, the photo with the model's skyline drawn on
+     it (blue dashes) and a panorama. "Download these places (CSV)" saves the list.
+
+GOOD TO KNOW
+  * Photos with distinctive hills, cliffs or mountains work best. Flat land, a sea horizon or a
+    view blocked by trees cannot be placed.
+  * A valley view whose skyline is very close (under 1-2 km) changes quickly as you move, so use
+    a finer grid spacing (150-200 m) for such photos.
+  * The elevation data does not include trees, buildings or snow cornices; small differences
+    along the ridge are normal. Mark tree-covered stretches as "Not skyline" for a better fit.
+  * The photo must be the right way up and not a stitched panorama.
+  * "Strong" means the best place fits at least 1.5 times better than any place more than 1 km
+    away; in testing every such result was right. "Possible" (1.15-1.5 times) was right about
+    half the time: check the blue model line on the photo. "Unsure" means several places fit
+    about equally: clean up the skyline, give the lens angle, or search a smaller area.
+  * Needs an internet connection (elevation data, maps and place search come from the internet).
+    Elevation tiles are kept in the "cache" folder, so a second search in the same area is faster.
+  * Your photo stays on this computer (or, for the online version, on the app's server for the
+    length of your visit); it is not sent anywhere else.
+
+DATA
+  * Elevation: AWS Terrain Tiles (SRTM, USGS 3DEP, GMTED2010, ETOPO1 and national models).
+  * Place search: Open-Meteo geocoding (GeoNames). Maps: OpenTopoMap, OpenStreetMap, Esri.
+  * Google Drive: Google's public folder view and download addresses (no sign-in).

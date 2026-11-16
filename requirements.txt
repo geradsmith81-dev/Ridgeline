@@ -1,0 +1,9 @@
+streamlit>=1.55
+numpy>=2.0
+scipy>=1.11
+requests>=2.31
+pillow>=10
+pillow-heif>=0.16
+matplotlib>=3.9
+pandas>=2.0
+geonamescache>=2.0
