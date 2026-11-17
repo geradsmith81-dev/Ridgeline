@@ -74,6 +74,7 @@ table.ag-tab th {text-align: left; color: #aab4c6; font-weight: 600; border-bott
 table.ag-tab td {border-bottom: 1px solid #1c2638; padding: 5px 6px; vertical-align: middle;}
 table.ag-tab td a {color: #6fd0dc;}
 .ag-wrap {overflow-x: auto;}
+.ag-credit {color: #ffcd9c; font-size: .92rem; text-align: center; margin: .6rem 0 1.2rem 0;}
 .ag-thumbname {font-size: .78rem; color: #dfe5ef; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;}
 </style>
 """, unsafe_allow_html=True)
@@ -796,3 +797,5 @@ st.caption('Elevation: AWS Terrain Tiles (SRTM, USGS 3DEP, GMTED2010, ETOPO1 and
            'Place search: Open-Meteo / GeoNames. Maps: OpenTopoMap, OpenStreetMap, Esri. '
            'The match is only as good as the skyline: photos with distinctive hills or mountains work best; '
            'flat land, sea horizons and views blocked by trees cannot be placed.')
+st.markdown('<div class="ag-credit">Developed by Gerad Smith and Marco Sugamiele for the '
+            '<i>Ancestors in Photo Negative</i> project</div>', unsafe_allow_html=True)
