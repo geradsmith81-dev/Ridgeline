@@ -4,7 +4,8 @@ Find where a landscape photo was taken: Ridgeline reads the skyline in a colour 
 photo and compares it with the skylines computed from open elevation data around a place you
 suggest. It shows the best-fitting places on a map with the camera direction, tilt and lens angle,
 and draws the model skyline over your photo. Normal photos, stitched panoramas (cylindrical or
-equirectangular, with Google GPano data read automatically) and 360° photos are supported. Results can be saved as a CSV list and as a map picture (PNG).
+equirectangular, with Google GPano data read automatically) and 360° photos are supported. Results can be saved as a CSV list and as a map picture (PNG), and each best place can be shown as a downloadable 3-D oblique view
+with the photo's view cone and the predicted skyline ridge.
 
 Made in the style of [Afterglow](https://github.com/geradsmith81-dev/afterglow-planner).
 

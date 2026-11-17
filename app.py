@@ -27,6 +27,7 @@ from PIL import Image
 import components as cm
 import gdrive
 import mapimage as mi
+import oblique as ob
 import places
 import search as se
 import skyline as sk
@@ -666,6 +667,30 @@ if photo and R:
                            type='primary', icon=':material/download:', width='stretch')
         st.caption('The picture shows the heat map, the numbered places, the view and skyline ridge of the place '
                    'selected above, and a legend. It takes a few seconds to make (map tiles are downloaded).')
+
+        # oblique 3-D view of the selected place
+        st.markdown(f'**3-D view of place #{sel + 1}** - the land seen from behind and above the place, with the '
+                    'photo\'s view and the predicted skyline ridge')
+        o1, o2, o3 = st.columns([1.1, 1.5, 1.1], vertical_alignment='bottom')
+        obl_base = o1.selectbox('Ground', list(mi.TILES), index=1, key='obl_base')
+        obl_show = o2.toggle('Show it here', key='obl_show',
+                             help='Drawing it takes 5-15 seconds the first time (terrain and imagery are downloaded).')
+        obl_key = ('obl', photo['hash'], sel, obl_base, round(res['timing']['total'], 3))
+
+        def _obl_png(view=view_img, key=obl_key, base=obl_base):
+            return ob.render_cached(key, view, base)
+        o3.download_button(f'Download 3-D view of place #{sel + 1} (PNG)', data=_obl_png, mime='image/png',
+                           on_click='ignore', type='primary', icon=':material/landscape:', width='stretch',
+                           file_name=f"ridgeline_3d_place{sel + 1}_{os.path.splitext(photo['name'])[0][:40]}.png",
+                           disabled=not (V and V.get('ridge')))
+        if obl_show and V and V.get('ridge'):
+            with st.spinner('Drawing the 3-D view...'):
+                try:
+                    st.image(_obl_png(), width='stretch')
+                except Exception as e:
+                    st.caption(f'The 3-D view could not be drawn ({e}).')
+        st.caption('Choose another place in "Show place" or tap a number on the map to see the view from there. '
+                   'Vertical scale is true; trees and buildings come from the imagery, not from the elevation model.')
         st.selectbox('Show place', list(range(len(cands))), key='sel_box',
                      format_func=lambda i: f"#{i + 1}  {cands[i]['lat']:.4f}, {cands[i]['lon']:.4f}  - fit {cands[i]['rms_deg']:.2f}°",
                      on_change=lambda: ss.__setitem__('sel', ss['sel_box']))
