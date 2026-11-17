@@ -642,12 +642,7 @@ if photo and R:
                      nonce=f"res:{photo['hash']}:{sel}:{res['timing']['total']:.3f}")
         cm.show_map(rdata, key='resmap', on_select=_on_select)
 
-        # download the map as a picture
-        st.markdown('**Save the results map as a picture**')
-        i1, i2, i3 = st.columns([1.1, 1.5, 1.1], vertical_alignment='bottom')
-        img_base = i1.selectbox('Background', list(mi.TILES), key='img_base')
-        img_ext = i2.radio('Show', ['Whole search area', f'Close-up of place #{sel + 1}'], key='img_ext',
-                           horizontal=True)
+        # pictures of the results: map image and 3-D view, each drawn with a progress bar
         pano_r = bool(R.get('cam'))
         view_img = dict(
             photo_name=photo['name'], start=st0, radius_km=R['radius'], coarse=res['coarse'], cands=cands, sel=sel,
@@ -657,39 +652,79 @@ if photo and R:
             place_text=(f"Place #{sel + 1}: {c['lat']:.5f}, {c['lon']:.5f}  ·  "
                         f"{'centre faces' if pano_r else 'facing'} {c['heading']:.1f}° {compass(c['heading'])}  ·  "
                         f"{'covers' if pano_r else 'lens'} {c['fov']:.1f}°  ·  skyline fit {c['rms_deg']:.2f}°"))
-        img_key = (photo['hash'], sel, img_base, img_ext.startswith('Whole'), round(res['timing']['total'], 3))
+        run_id = round(res['timing']['total'], 3)
+        stem = os.path.splitext(photo['name'])[0][:40]
+
+        def draw_with_progress(what, fn):
+            """Run a drawing function, showing a progress bar with the stage, elapsed time and time left."""
+            bar = st.progress(0.0, text=f'Drawing the {what}...')
+            t0 = time.time()
+
+            def prog(frac, msg):
+                el = time.time() - t0
+                left = ''
+                if 0.08 < frac < 0.999 and el > 1.0:
+                    left = f', about {max(1, round(el * (1 - frac) / frac))} s left'
+                bar.progress(min(1.0, max(0.0, float(frac))),
+                             text=f'Drawing the {what}: {msg} - {frac * 100:.0f} % - {el:.1f} s{left}')
+            try:
+                png = fn(prog)
+            except Exception as e:
+                bar.empty()
+                st.error(f'The {what} could not be drawn ({e}).')
+                return None, 0.0
+            secs = time.time() - t0
+            bar.progress(1.0, text=f'The {what} is ready - drawn in {secs:.1f} s')
+            return png, secs
+
+        st.markdown('**Save the results map as a picture**')
+        i1, i2, i3 = st.columns([1.1, 1.5, 1.1], vertical_alignment='bottom')
+        img_base = i1.selectbox('Background', list(mi.TILES), key='img_base')
+        img_ext = i2.radio('Show', ['Whole search area', f'Close-up of place #{sel + 1}'], key='img_ext',
+                           horizontal=True)
         img_extent = 'area' if img_ext.startswith('Whole') else 'place'
+        img_key = ('map', photo['hash'], sel, img_base, img_extent, run_id)
+        if i3.button('Draw map image', key='draw_map', icon=':material/map:', width='stretch'):
+            png, secs = draw_with_progress('map image', lambda p: mi.render_cached(img_key, view_img, img_base,
+                                                                                    img_extent, progress=p))
+            if png:
+                ss['pic_map'] = dict(key=img_key, png=png, secs=secs)
+        pm = ss.get('pic_map')
+        if pm and pm['key'] == img_key:
+            d1, d2 = st.columns([1.1, 2.6], vertical_alignment='center')
+            d1.download_button('Download map image (PNG)', pm['png'], mime='image/png', on_click='ignore',
+                               file_name=f'ridgeline_map_{stem}_{img_extent}.png', type='primary',
+                               icon=':material/download:', width='stretch')
+            d2.caption(f"Drawn in {pm['secs']:.1f} s ({len(pm['png']) / 1e6:.1f} MB).")
+            with st.expander('Preview of the map image'):
+                st.image(pm['png'], width='stretch')
+        else:
+            st.caption('Press "Draw map image": a progress bar shows the drawing time, then the picture can be '
+                       'downloaded. It shows the heat map, the numbered places, the view and skyline ridge of the '
+                       'place selected above, and a legend.')
 
-        def _map_png(view=view_img, key=img_key, base=img_base, extent=img_extent):
-            return mi.render_cached(key, view, base, extent)
-        i3.download_button('Download map image (PNG)', data=_map_png, mime='image/png', on_click='ignore',
-                           file_name=f"ridgeline_map_{os.path.splitext(photo['name'])[0][:40]}_{img_extent}.png",
-                           type='primary', icon=':material/download:', width='stretch')
-        st.caption('The picture shows the heat map, the numbered places, the view and skyline ridge of the place '
-                   'selected above, and a legend. It takes a few seconds to make (map tiles are downloaded).')
-
-        # oblique 3-D view of the selected place
         st.markdown(f'**3-D view of place #{sel + 1}** - the land seen from behind and above the place, with the '
                     'photo\'s view and the predicted skyline ridge')
-        o1, o2, o3 = st.columns([1.1, 1.5, 1.1], vertical_alignment='bottom')
+        o1, o2 = st.columns([1.1, 2.6], vertical_alignment='bottom')
         obl_base = o1.selectbox('Ground', list(mi.TILES), index=1, key='obl_base')
-        obl_show = o2.toggle('Show it here', key='obl_show',
-                             help='Drawing it takes 5-15 seconds the first time (terrain and imagery are downloaded).')
-        obl_key = ('obl', photo['hash'], sel, obl_base, round(res['timing']['total'], 3))
-
-        def _obl_png(view=view_img, key=obl_key, base=obl_base):
-            return ob.render_cached(key, view, base)
-        o3.download_button(f'Download 3-D view of place #{sel + 1} (PNG)', data=_obl_png, mime='image/png',
-                           on_click='ignore', type='primary', icon=':material/landscape:', width='stretch',
-                           file_name=f"ridgeline_3d_place{sel + 1}_{os.path.splitext(photo['name'])[0][:40]}.png",
-                           disabled=not (V and V.get('ridge')))
-        if obl_show and V and V.get('ridge'):
-            with st.spinner('Drawing the 3-D view...'):
-                try:
-                    st.image(_obl_png(), width='stretch')
-                except Exception as e:
-                    st.caption(f'The 3-D view could not be drawn ({e}).')
-        st.caption('Choose another place in "Show place" or tap a number on the map to see the view from there. '
+        obl_key = ('obl', photo['hash'], sel, obl_base, run_id)
+        can_obl = bool(V and V.get('ridge'))
+        if o2.button(f'Draw 3-D view of place #{sel + 1}', key='draw_obl', icon=':material/landscape:',
+                     disabled=not can_obl):
+            png, secs = draw_with_progress('3-D view', lambda p: ob.render_cached(obl_key, view_img, obl_base,
+                                                                                   progress=p))
+            if png:
+                ss['pic_obl'] = dict(key=obl_key, png=png, secs=secs)
+        po = ss.get('pic_obl')
+        if po and po['key'] == obl_key:
+            st.image(po['png'], width='stretch')
+            e1, e2 = st.columns([1.1, 2.6], vertical_alignment='center')
+            e1.download_button(f'Download 3-D view of place #{sel + 1} (PNG)', po['png'], mime='image/png',
+                               on_click='ignore', file_name=f'ridgeline_3d_place{sel + 1}_{stem}.png', type='primary',
+                               icon=':material/download:', width='stretch')
+            e2.caption(f"Drawn in {po['secs']:.1f} s ({len(po['png']) / 1e6:.1f} MB).")
+        st.caption('The first drawing in an area takes 5-15 seconds (terrain and imagery are downloaded); later ones are '
+                   'quicker. Choose another place in "Show place" or tap a number on the map for its own 3-D view. '
                    'Vertical scale is true; trees and buildings come from the imagery, not from the elevation model.')
         st.selectbox('Show place', list(range(len(cands))), key='sel_box',
                      format_func=lambda i: f"#{i + 1}  {cands[i]['lat']:.4f}, {cands[i]['lon']:.4f}  - fit {cands[i]['rms_deg']:.2f}°",

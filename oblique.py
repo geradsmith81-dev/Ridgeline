@@ -35,7 +35,8 @@ K_REFR = tr.K_REFRACTION
 class Imagery:
     """Basemap tiles of one zoom level over a lat/lon box, sampled bilinearly (RGB 0-1)."""
 
-    def __init__(self, base, z, lat_min, lat_max, lon_min, lon_max, max_tiles=48):
+    def __init__(self, base, z, lat_min, lat_max, lon_min, lon_max, max_tiles=48, progress=None, lo=0.0, hi=1.0,
+                 what='imagery'):
         while True:
             x0, y1 = tr.merc_px(np.array([lat_min]), np.array([lon_min]), z)
             x1, y0 = tr.merc_px(np.array([lat_max]), np.array([lon_max]), z)
@@ -46,8 +47,7 @@ class Imagery:
             z -= 1
         self.z, self.tx0, self.ty0 = z, tx0, ty0
         jobs = [(tx, ty) for ty in range(ty0, ty1 + 1) for tx in range(tx0, tx1 + 1)]
-        with ThreadPoolExecutor(max_workers=8) as ex:
-            tiles = list(ex.map(lambda j: mi._tile(base, z, j[0], j[1]), jobs))
+        tiles = mi.fetch_tiles(base, z, jobs, progress, lo, hi, what)
         arr = np.full(((ty1 - ty0 + 1) * 256, (tx1 - tx0 + 1) * 256, 3), 0.45, np.float32)
         self.missing = 0
         for (tx, ty), t in zip(jobs, tiles):
@@ -85,7 +85,7 @@ def _local_xy(lat0, lon0, lat, lon):
             np.radians(np.asarray(lat) - lat0) * R)
 
 
-def render(view, base='Satellite photo', width=1600, height=1200):
+def render(view, base='Satellite photo', width=1600, height=1200, progress=None):
     """PNG bytes of the oblique view of the chosen place.
 
     view: dict(photo_name, cands, sel, ridge [[lat, lon], ...], cone_km, verdict (label, text, colour),
@@ -111,7 +111,11 @@ def render(view, base='Satellite photo', width=1600, height=1200):
     f = (W / 2.0) / math.tan(math.radians(F) / 2.0)
     cy = Hh / 2.0
     vfov = 2.0 * math.atan(cy / f)
-    A = se.AreaTerrain(lat_p, lon_p, 9.0, min(91.0, 1.3 * d_far + 12.0), se.BANDS_FINE)
+    prog = progress or (lambda f, msg: None)
+    prog(0.01, 'Loading elevation data')
+    A = se.AreaTerrain(lat_p, lon_p, 9.0, min(91.0, 1.3 * d_far + 12.0), se.BANDS_FINE,
+                       progress=lambda msg, fr: prog(0.01 + 0.44 * fr, 'Loading elevation data'))
+    prog(0.45, 'Placing the camera')
     g_p = float(A.ground(np.array([lat_p]), np.array([lon_p]))[0])
     if ridge:
         rh_all = _dem(A, rla, rlo, rdist * 1000.0)
@@ -138,6 +142,7 @@ def render(view, base='Satellite photo', width=1600, height=1200):
     pitch = float(np.clip(pitch, math.radians(-35.0), math.radians(10.0)))
     d_max = float(np.clip(1.3 * d_far + back + 2.0, 10.0, 90.0)) * 1000.0
 
+    prog(0.47, 'Tracing the terrain')
     # rays: one compass direction per column, geometric distance steps
     cols = np.arange(W) + 0.5
     a_rel = np.arctan((cols - W / 2.0) / f)                                  # rad, relative to heading
@@ -184,18 +189,23 @@ def render(view, base='Satellite photo', width=1600, height=1200):
     # ground colour from the basemap, three detail levels by distance
     rgb = np.zeros((Hh, W, 3), np.float32)
     missing = n_tiles = 0
-    for d0, d1, z, mt in ((0, 2500, 16, 90), (2500, 12000, 14, 64), (12000, 1e9, 12, 48)):
+    prog(0.53, 'Loading imagery')
+    bands_t = ((0, 2500, 16, 90, 'near imagery'), (2500, 12000, 14, 64, 'middle-distance imagery'),
+               (12000, 1e9, 12, 48, 'distant imagery'))
+    for bi_, (d0, d1, z, mt, what) in enumerate(bands_t):
+        lo_p, hi_p = 0.53 + 0.11 * bi_, 0.53 + 0.11 * (bi_ + 1)
         msk = ground & (dpx >= d0) & (dpx < d1)
         if not msk.any():
             continue
         L, O = lat_px[msk], lon_px[msk]
         im = Imagery(base, z, float(L.min()) - 0.002, float(L.max()) + 0.002, float(O.min()) - 0.002, float(O.max()) + 0.002,
-                     max_tiles=mt)
+                     max_tiles=mt, progress=prog, lo=lo_p, hi=hi_p, what=what)
         missing += im.missing
         n_tiles += im.n
         rgb[msk] = im.sample(L, O)
     rgb *= (0.55 + 0.45 * shade_px)[..., None] if base != 'Satellite photo' else (0.8 + 0.2 * shade_px)[..., None]
 
+    prog(0.86, 'Shading, haze and the view of the photo')
     # sky and haze
     tt = np.clip((rows / Hh), 0, 1)[:, None, None]
     sky = (np.array([0.16, 0.29, 0.50]) * (1 - tt) + np.array([0.80, 0.86, 0.92]) * tt).astype(np.float32)
@@ -242,6 +252,7 @@ def render(view, base='Satellite photo', width=1600, height=1200):
         vis = ok & (dist <= depth * 1.03 + 60.0)
         return u, vv, vis, dist
 
+    prog(0.92, 'Drawing the skyline ridge and the places')
     S = 2
     ov = Image.new('RGBA', (W * S, Hh * S), (0, 0, 0, 0))
     dr = ImageDraw.Draw(ov)
@@ -335,8 +346,10 @@ def render(view, base='Satellite photo', width=1600, height=1200):
     if missing:
         note += f'  |  {missing} of {n_tiles} map tiles could not be loaded'
     pd.text((24, fy + 46), note, font=mi._font(13), fill=mi.SUB, anchor='lm')
+    prog(0.96, 'Saving the picture')
     out = io.BytesIO()
     page.save(out, format='PNG', optimize=True)
+    prog(1.0, 'Done')
     return out.getvalue()
 
 
@@ -350,9 +363,11 @@ def mi_compass(az):
 _CACHE = {}
 
 
-def render_cached(key, view, base='Satellite photo'):
+def render_cached(key, view, base='Satellite photo', progress=None):
     if key not in _CACHE:
         if len(_CACHE) > 6:
             _CACHE.pop(next(iter(_CACHE)))
-        _CACHE[key] = render(view, base)
+        _CACHE[key] = render(view, base, progress=progress)
+    elif progress:
+        progress(1.0, 'Done (already drawn)')
     return _CACHE[key]

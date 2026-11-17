@@ -89,7 +89,20 @@ def _tile(base, z, x, y):
         return None
 
 
-def _basemap(base, lat_c, lon_c, half_km, w, h):
+def fetch_tiles(base, z, jobs, progress=None, lo=0.0, hi=1.0, what='map tiles'):
+    """Download tiles in parallel, reporting progress as each one arrives."""
+    from concurrent.futures import as_completed
+    out = [None] * len(jobs)
+    with ThreadPoolExecutor(max_workers=8) as ex:
+        futs = {ex.submit(_tile, base, z, j[0], j[1]): i for i, j in enumerate(jobs)}
+        for n, fu in enumerate(as_completed(futs), 1):
+            out[futs[fu]] = fu.result()
+            if progress and (n == len(jobs) or n % 3 == 0):
+                progress(lo + (hi - lo) * n / max(1, len(jobs)), f'Loading {what} ({n} of {len(jobs)})')
+    return out
+
+
+def _basemap(base, lat_c, lon_c, half_km, w, h, progress=None):
     """Stitched basemap of w x h pixels centred on (lat_c, lon_c) showing at least +-half_km."""
     ppk_needed = min(w, h) / (2.0 * half_km)                     # pixels per km needed
     z = 3
@@ -107,8 +120,7 @@ def _basemap(base, lat_c, lon_c, half_km, w, h):
     tx0, ty0 = int(math.floor(x0 / 256)), int(math.floor(y0 / 256))
     tx1, ty1 = int(math.floor((x0 + sw) / 256)), int(math.floor((y0 + sh) / 256))
     jobs = [(tx, ty) for ty in range(ty0, ty1 + 1) for tx in range(tx0, tx1 + 1)]
-    with ThreadPoolExecutor(max_workers=8) as ex:
-        tiles = list(ex.map(lambda j: _tile(base, z, j[0], j[1]), jobs))
+    tiles = fetch_tiles(base, z, jobs, progress, 0.02, 0.75)
     canvas = Image.new('RGB', ((tx1 - tx0 + 1) * 256, (ty1 - ty0 + 1) * 256), (40, 46, 58))
     missing = 0
     for (tx, ty), t in zip(jobs, tiles):
@@ -188,15 +200,17 @@ def _nice_km(target):
 _CACHE = {}
 
 
-def render_cached(key, view, base='Topographic', extent='area'):
+def render_cached(key, view, base='Topographic', extent='area', progress=None):
     if key not in _CACHE:
         if len(_CACHE) > 6:
             _CACHE.pop(next(iter(_CACHE)))
-        _CACHE[key] = render(view, base, extent)
+        _CACHE[key] = render(view, base, extent, progress=progress)
+    elif progress:
+        progress(1.0, 'Done (already drawn)')
     return _CACHE[key]
 
 
-def render(view, base='Topographic', extent='area', width=1600, height=1200):
+def render(view, base='Topographic', extent='area', width=1600, height=1200, progress=None):
     """PNG bytes of the results map.
 
     view: dict(photo_name, start{lat,lon,label}, radius_km, coarse (lat, lon, score, spacing_km),
@@ -215,7 +229,10 @@ def render(view, base='Topographic', extent='area', width=1600, height=1200):
     else:
         lat_c, lon_c = st0['lat'], st0['lon']
         half = 1.12 * float(view['radius_km'])
-    img, to_px, missing, n_tiles, ppk = _basemap(base, lat_c, lon_c, half, mw, mh)
+    prog = progress or (lambda f, msg: None)
+    prog(0.01, 'Choosing the map area')
+    img, to_px, missing, n_tiles, ppk = _basemap(base, lat_c, lon_c, half, mw, mh, progress=prog)
+    prog(0.78, 'Drawing the heat map, places and view')
     img = img.convert('RGBA')
 
     S = 2                                                     # overlay drawn at 2x, then smoothed
@@ -383,6 +400,8 @@ def render(view, base='Topographic', extent='area', width=1600, height=1200):
     pd.text((24, fy + 72), 'Heat map: how well the photo skyline fits the skyline seen from each tested place '
                            '(bright = good). Trees and buildings are not in the elevation model.',
             font=_font(13), fill=SUB, anchor='lm')
+    prog(0.93, 'Saving the picture')
     out = io.BytesIO()
     page.save(out, format='PNG', optimize=True)
+    prog(1.0, 'Done')
     return out.getvalue()
