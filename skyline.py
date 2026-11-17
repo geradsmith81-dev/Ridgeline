@@ -23,6 +23,7 @@ atan((cy - y) / sqrt(f^2 + (x - cx)^2))  above the camera's optical-axis level. 
 tilt (pitch) and a small roll are solved for during matching.
 """
 import io
+import re
 import math
 
 import numpy as np
@@ -36,6 +37,8 @@ except Exception:
     pass
 
 WORK_WIDTH = 900
+PANO_WORK_WIDTH = 2400
+Image.MAX_IMAGE_PIXELS = 400_000_000      # stitched panoramas can be 60-100 megapixels
 DIAG_35MM = math.hypot(36.0, 24.0)       # 43.27 mm
 
 
@@ -63,12 +66,72 @@ def _dms(v, ref):
         return None
 
 
+_GP_FIELDS = ('ProjectionType', 'FullPanoWidthPixels', 'FullPanoHeightPixels', 'CroppedAreaImageWidthPixels',
+              'CroppedAreaImageHeightPixels', 'CroppedAreaLeftPixels', 'CroppedAreaTopPixels', 'PoseHeadingDegrees',
+              'UsePanoramaViewer')
+
+
+def read_gpano(raw):
+    """Google Photo Sphere (GPano) XMP fields from the file bytes, or {}.  Written by Google Camera,
+    360-degree cameras (Ricoh Theta, Insta360 ...) and many stitching programs."""
+    if not raw:
+        return {}
+    head = bytes(raw[:2_000_000])
+    if b'GPano' not in head:
+        return {}
+    txt = head.decode('latin-1', 'ignore')
+    out = {}
+    for f in _GP_FIELDS:
+        m = re.search(r'GPano:%s\s*=\s*"([^"]*)"' % f, txt) or re.search(r'<GPano:%s>([^<]*)</GPano:%s>' % (f, f), txt)
+        if m:
+            v = m.group(1).strip()
+            try:
+                out[f] = float(v) if f not in ('ProjectionType', 'UsePanoramaViewer') else v
+            except ValueError:
+                pass
+    return out
+
+
+def pano_from_gpano(gp, w, h):
+    """Angle of view (deg), projection and horizon row (in this image's pixels) from GPano, or None."""
+    try:
+        fw, cw = gp['FullPanoWidthPixels'], gp['CroppedAreaImageWidthPixels']
+    except KeyError:
+        return None
+    if fw <= 0 or cw <= 0:
+        return None
+    hfov = 360.0 * cw / fw
+    proj = 'equi' if str(gp.get('ProjectionType', 'equirectangular')).lower().startswith('equi') else 'cyl'
+    y0 = None
+    if 'FullPanoHeightPixels' in gp and 'CroppedAreaTopPixels' in gp:
+        ch = gp.get('CroppedAreaImageHeightPixels') or h
+        y0 = (gp['FullPanoHeightPixels'] / 2.0 - gp['CroppedAreaTopPixels']) * (h / ch)
+    return dict(hfov=hfov, proj=proj, y0=y0, heading=gp.get('PoseHeadingDegrees'))
+
+
+def guess_kind(info):
+    """'360', 'pano' or 'photo' from GPano data and the picture's shape."""
+    gp = info.get('pano')
+    w, h = info['width'], info['height']
+    if gp and gp['hfov'] >= 359.0:
+        return '360'
+    if gp and gp['hfov'] > 100.0:
+        return 'pano'
+    if abs(w / h - 2.0) < 0.02 and w >= 3000:
+        return '360'
+    if w / h >= 2.4:
+        return 'pano'
+    return 'photo'
+
+
 def load_image(data):
     """bytes or file-like -> (upright RGB PIL image, info dict with EXIF facts)."""
-    if isinstance(data, (bytes, bytearray)):
-        data = io.BytesIO(data)
+    raw = bytes(data) if isinstance(data, (bytes, bytearray)) else None
+    if raw is not None:
+        data = io.BytesIO(raw)
     im = Image.open(data)
     info = exif_info(im)
+    info['gpano'] = read_gpano(raw)
     try:
         im = ImageOps.exif_transpose(im)
     except Exception:
@@ -76,6 +139,8 @@ def load_image(data):
     info['is_color'] = is_color_image(im)
     im = im.convert('RGB')
     info['width'], info['height'] = im.size
+    info['pano'] = pano_from_gpano(info['gpano'], *im.size) if info['gpano'] else None
+    info['kind'] = guess_kind(info)
     return im, info
 
 

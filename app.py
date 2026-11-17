@@ -119,17 +119,17 @@ def decode_photo(data):
 
 
 @st.cache_data(max_entries=6, show_spinner=False)
-def detect_skyline(h, data, smooth, edge):
+def detect_skyline(h, data, smooth, edge, work_width=sk.WORK_WIDTH):
     im, info = decode_photo(data)
-    d = sk.detect(im, smooth=smooth, edge_weight=edge)
+    d = sk.detect(im, smooth=smooth, edge_weight=edge, work_width=work_width)
     d.pop('sky', None)
     return d
 
 
 @st.cache_data(max_entries=6, show_spinner=False)
-def display_image(h, data):
+def display_image(h, data, max_w=1400):
     im, _ = decode_photo(data)
-    url, size = cm.image_data_url(im)
+    url, size = cm.image_data_url(im, max_w=max_w)
     return url, size
 
 
@@ -149,8 +149,10 @@ def drive_get(file_id):
 
 
 @st.cache_data(ttl=7 * 86400, max_entries=30, show_spinner=False)
-def view_for(lat, lon, heading, fov, pitch, roll, size, n_cols, max_km, height):
-    return se.view_of(lat, lon, heading, fov, pitch, roll, size, n_cols, max_km=max_km, height=height)
+def view_for(lat, lon, heading, fov, pitch, roll, size, n_cols, max_km, height, proj=None, y0=None, tilt=0.0):
+    cam = dict(proj=proj, y0=y0) if proj in ('cyl', 'equi') else None
+    return se.view_of(lat, lon, heading, fov, pitch, roll, size, n_cols, max_km=max_km, height=height, cam=cam,
+                      tilt=tilt, step=(0.1 if cam else 0.05))
 
 
 # ------------------------------------------------------------------------------------------
@@ -305,6 +307,8 @@ if photo:
         exif_bits.append(f"{info['focal_mm']:.1f} mm lens (no 35 mm equivalent stored)")
     if info.get('lat') is not None:
         exif_bits.append('GPS position stored in the photo')
+    if info.get('pano'):
+        exif_bits.append(f"panorama data: {info['pano']['hfov']:.0f}° wide")
     st.caption(f"**{html.escape(photo['name'])}** - {info['width']} x {info['height']} px, "
                f"{'colour' if info.get('is_color') else 'black and white'}"
                + (' - ' + ', '.join(exif_bits) if exif_bits else ' - no camera data (EXIF)'))
@@ -345,6 +349,8 @@ else:
     spacing = float(sp_choice)
 n_pts = int(math.pi * radius ** 2 / spacing ** 2)
 est_s = 20 + n_pts * 0.015 + 90 + (60 if ss.get('lens', '').startswith('Not known') else 0)
+if photo and info.get('kind') in ('pano', '360'):
+    est_s += 60 + n_pts * 0.01
 st.caption('Tip: when the skyline in the photo is close (a valley, a cliff a kilometre or two away), the view changes '
            'quickly as you move. Then a smaller search area with a 150-200 m grid works better than a big one.')
 st.caption(f'About {n_pts:,} places will be tested ({spacing * 1000:.0f} m apart); this takes roughly '
@@ -367,6 +373,15 @@ sky = None
 hfov = None
 if photo:
     step(3, 'Check the skyline')
+    KINDS = ['Normal photo (one frame)', 'Panorama (stitched, e.g. a phone\'s "Pano" mode)',
+             '360° photo (the whole way round, equirectangular)']
+    k_default = {'photo': 0, 'pano': 1, '360': 2}[info.get('kind', 'photo')]
+    kind = st.radio('What kind of picture is it?', KINDS, index=k_default, key=f"kind_{photo['hash']}",
+                    horizontal=True)
+    pano = kind != KINDS[0]
+    if pano and k_default == 0:
+        st.caption('This picture does not look like a panorama (it is not very wide and has no panorama data). '
+                   'Choose "Normal photo" unless you know it was stitched.')
     with st.expander('Skyline finder settings'):
         e1, e2 = st.columns(2)
         smooth = e1.slider('Line smoothness', 0.2, 4.0, 1.0, 0.1, key='smooth',
@@ -374,11 +389,12 @@ if photo:
         edge = e2.slider('Follow edges', 0.0, 3.0, 1.0, 0.1, key='edgew',
                          help='How strongly the line sticks to sharp light/dark edges.')
     with st.spinner('Finding the skyline...'):
-        det = detect_skyline(photo['hash'], photo['data'], smooth, edge)
-    url, dsize = display_image(photo['hash'], photo['data'])
+        det = detect_skyline(photo['hash'], photo['data'], smooth, edge,
+                             sk.PANO_WORK_WIDTH if pano else sk.WORK_WIDTH)
+    url, dsize = display_image(photo['hash'], photo['data'], 2400 if pano else 1400)
     W0, H0 = det['size']
     fx = dsize[0] / W0
-    nonce = f"{photo['hash']}:{smooth}:{edge}:{ss.get('edit_nonce_n', 0)}"
+    nonce = f"{photo['hash']}:{smooth}:{edge}:{int(pano)}:{ss.get('edit_nonce_n', 0)}"
     ed = ss.get('edit')
     if ed and ed.get('nonce') == nonce and len(ed['y']) == len(det['y']):
         y_disp = ed['y']
@@ -402,29 +418,63 @@ if photo:
                'long stretch with mistakes.')
     sky = dict(x=np.asarray(det['x'], float), y=y_orig, valid=valid_a, size=(W0, H0))
 
-    # lens
-    st.markdown('**How wide is the view?**')
-    ex_fov = sk.hfov_from_exif(info, W0, H0)
-    opts = []
-    if ex_fov:
-        opts.append(f"From the photo's camera data: {info['focal35']:.0f} mm equivalent = {ex_fov:.1f}° wide")
-    opts += ['Phone main camera (26 mm equivalent)', 'Enter the 35 mm-equivalent focal length',
-             'Enter the horizontal angle of view', 'Not known - let the app try 20° to 90°']
-    lens = st.radio('Lens', opts, key='lens', label_visibility='collapsed')
-    if lens.startswith("From the photo"):
-        hfov = ex_fov
-        st.caption('If the picture was cropped, the camera data no longer fits - choose "Not known" instead.')
-    elif lens.startswith('Phone'):
-        hfov = sk.hfov_from_focal35(26.0, W0, H0)
-        st.caption(f'{hfov:.1f}° wide for this picture shape.')
-    elif lens.startswith('Enter the 35'):
-        f35 = st.number_input('35 mm-equivalent focal length (mm)', 8.0, 1200.0, 50.0, 1.0, key='f35')
-        hfov = sk.hfov_from_focal35(f35, W0, H0)
-        st.caption(f'{hfov:.1f}° wide for this picture shape.')
-    elif lens.startswith('Enter the horizontal'):
-        hfov = st.number_input('Horizontal angle of view (degrees)', 2.0, 150.0, 60.0, 0.5, key='hfov_in')
+    # lens / panorama angle
+    cam = None
+    if not pano:
+        st.markdown('**How wide is the view?**')
+        ex_fov = sk.hfov_from_exif(info, W0, H0)
+        opts = []
+        if ex_fov:
+            opts.append(f"From the photo's camera data: {info['focal35']:.0f} mm equivalent = {ex_fov:.1f}° wide")
+        opts += ['Phone main camera (26 mm equivalent)', 'Enter the 35 mm-equivalent focal length',
+                 'Enter the horizontal angle of view', 'Not known - let the app try 20° to 90°']
+        lens = st.radio('Lens', opts, key='lens', label_visibility='collapsed')
+        if lens.startswith("From the photo"):
+            hfov = ex_fov
+            st.caption('If the picture was cropped, the camera data no longer fits - choose "Not known" instead.')
+        elif lens.startswith('Phone'):
+            hfov = sk.hfov_from_focal35(26.0, W0, H0)
+            st.caption(f'{hfov:.1f}° wide for this picture shape.')
+        elif lens.startswith('Enter the 35'):
+            f35 = st.number_input('35 mm-equivalent focal length (mm)', 8.0, 1200.0, 50.0, 1.0, key='f35')
+            hfov = sk.hfov_from_focal35(f35, W0, H0)
+            st.caption(f'{hfov:.1f}° wide for this picture shape.')
+        elif lens.startswith('Enter the horizontal'):
+            hfov = st.number_input('Horizontal angle of view (degrees)', 2.0, 150.0, 60.0, 0.5, key='hfov_in')
+        else:
+            hfov = None
     else:
-        hfov = None
+        gp = info.get('pano')
+        if kind == KINDS[2]:
+            hfov = 360.0
+            proj = 'equi'
+            y0 = gp['y0'] if gp and gp.get('y0') is not None else None
+            st.caption('A 360° photo covers the whole horizon, so only the place and the direction of the picture\'s '
+                       'centre are searched for. Use the full, unedited picture (2:1 shape).')
+        else:
+            st.markdown('**How much of the horizon does the panorama cover?**')
+            popts = []
+            if gp:
+                popts.append(f"From the panorama's data: {gp['hfov']:.0f}°")
+            popts += ['Enter the angle it covers (degrees)', 'Not known - let the app try 90° to 360°']
+            plens = st.radio('Panorama angle', popts, key='pano_lens', label_visibility='collapsed')
+            y0 = gp['y0'] if gp else None
+            if plens.startswith('From the panorama'):
+                hfov = gp['hfov']
+            elif plens.startswith('Enter'):
+                hfov = st.number_input('Angle covered (degrees, 360 = all the way round)', 60.0, 360.0, 180.0, 5.0,
+                                       key='pano_deg', help='A phone panorama swept from one side to the other '
+                                       'usually covers 120-240°.')
+            else:
+                hfov = None
+            proj_names = {'cyl': 'Cylindrical (phone panoramas and most stitching programs)',
+                          'equi': 'Equirectangular (Google Camera, Photo Sphere, 360° tools)'}
+            pdef = gp['proj'] if gp else 'cyl'
+            proj = st.selectbox('Projection', ['cyl', 'equi'], index=0 if pdef == 'cyl' else 1, key='pano_proj',
+                                format_func=lambda p: proj_names[p])
+            st.caption('Do not crop the sides of the panorama after stitching, or the angle no longer fits. '
+                       'Small up-down shifts and a slightly tilted horizon are found by the app.')
+        cam = dict(proj=proj, y0=y0, ref_fov=hfov or 180.0)
     with st.expander('More settings: camera height, distance of the skyline'):
         m1, m2 = st.columns(2)
         cam_h = m1.number_input('Camera height above the ground (m)', 0.0, 3000.0, 1.7, 0.5, key='cam_h',
@@ -433,6 +483,8 @@ if photo:
                                   120, key='max_km')
 else:
     cam_h, max_km = 1.7, 120
+    cam = None
+    pano = False
 
 # ------------------------------------------------------------------------------------------
 # 4  search
@@ -445,7 +497,7 @@ if photo:
     elif sky is not None and sky['valid'].sum() < 20:
         st.warning('There is too little skyline to work with. Use "Draw skyline" or "Is skyline" on the picture.')
     params = (photo['hash'], start['lat'] if start else None, start['lon'] if start else None, radius, spacing,
-              round(hfov, 3) if hfov else None, cam_h, max_km, hashlib.sha1(np.nan_to_num(sky['y']).tobytes()
+              round(hfov, 3) if hfov else None, cam_h, max_km, str(cam), hashlib.sha1(np.nan_to_num(sky['y']).tobytes()
               + sky['valid'].tobytes()).hexdigest()[:12] if sky else None)
     if st.button('Search for the place', type='primary', disabled=not ready, width='stretch'):
         bar = st.progress(0.0, text='Starting...')
@@ -456,8 +508,8 @@ if photo:
         try:
             res = se.locate(sky['x'], sky['y'], sky['valid'], sky['size'], start['lat'], start['lon'],
                             radius_km=radius, spacing_km=spacing, hfov=hfov, max_km=max_km, height=cam_h,
-                            progress=prog, skyline_mod=sk)
-            ss['res'] = dict(res=res, params=params, start=dict(start), hfov=hfov, radius=radius)
+                            progress=prog, skyline_mod=sk, cam=cam)
+            ss['res'] = dict(res=res, params=params, start=dict(start), hfov=hfov, radius=radius, cam=cam)
             ss['sel'] = 0
             ss['sel_box'] = 0
         except (tr.TerrainError, ValueError) as e:
@@ -542,11 +594,23 @@ if photo and R:
         n_cols = len(sky['y'])
         try:
             V = view_for(round(c['lat'], 6), round(c['lon'], 6), round(c['heading'], 3), round(c['fov'], 3),
-                         round(c['pitch'], 3), round(c['roll'], 3), tuple(sky['size']), n_cols, max_km, cam_h)
+                         round(c['pitch'], 3), round(c['roll'], 3), tuple(sky['size']), n_cols, max_km, cam_h,
+                         (R.get('cam') or {}).get('proj'), (R.get('cam') or {}).get('y0'), round(c.get('tilt', 0.0), 3))
         except Exception as e:
             V = None
             st.caption(f'The view from this place could not be drawn ({e}).')
         d_start = float(se.haversine_km(st0['lat'], st0['lon'], c['lat'], c['lon']))
+        if R.get('cam'):
+            lens_sub = (f"horizon {abs(c['pitch']):.1f}° {'above' if c['pitch'] >= 0 else 'below'} the picture's "
+                        f"middle row; level within {math.hypot(c.get('tilt', 0.0), c['roll']):.1f}°")
+        else:
+            lens_sub = (f"tilted {abs(c['pitch']):.1f}° {'up' if c['pitch'] >= 0 else 'down'}, turned "
+                        f"{abs(c['roll']):.1f}° {'clockwise' if c['roll'] >= 0 else 'anticlockwise'}")
+        pano_head_txt = ''
+        gph = (info.get('pano') or {}).get('heading')
+        if R.get('cam') and gph is not None:
+            dd_ = abs(((c['heading'] - gph + 180) % 360) - 180)
+            pano_head_txt = f'; the panorama\'s own data says {gph:.0f}° ({dd_:.0f}° apart)'
         exif_txt = ''
         if info.get('lat') is not None:
             d_ex = float(se.haversine_km(info['lat'], info['lon'], c['lat'], c['lon']))
@@ -555,11 +619,10 @@ if photo and R:
           <div class="ag-card ag-c1"><div class="k">Place #{sel + 1}</div><div class="v">{c['lat']:.5f}, {c['lon']:.5f}</div>
             <div class="s">{html.escape(places.describe(c['lat'], c['lon']))} · ground {c['ground']:.0f} m ·
             {d_start:.1f} km from the start{(' · ' + exif_txt) if exif_txt else ''}</div></div>
-          <div class="ag-card ag-c2"><div class="k">Camera facing</div><div class="v">{c['heading']:.1f}° {compass(c['heading'])}</div>
-            <div class="s">direction of the picture's centre (true north)</div></div>
-          <div class="ag-card ag-c3"><div class="k">Lens</div><div class="v">{c['fov']:.1f}° wide</div>
-            <div class="s">tilted {abs(c['pitch']):.1f}° {'up' if c['pitch'] >= 0 else 'down'}, turned {abs(c['roll']):.1f}°
-            {'clockwise' if c['roll'] >= 0 else 'anticlockwise'}</div></div>
+          <div class="ag-card ag-c2"><div class="k">{'Panorama centre faces' if R.get('cam') else 'Camera facing'}</div><div class="v">{c['heading']:.1f}° {compass(c['heading'])}</div>
+            <div class="s">direction of the picture's centre (true north){pano_head_txt}</div></div>
+          <div class="ag-card ag-c3"><div class="k">{'Panorama covers' if R.get('cam') else 'Lens'}</div><div class="v">{c['fov']:.1f}°{'' if R.get('cam') else ' wide'}</div>
+            <div class="s">{lens_sub}</div></div>
           <div class="ag-card ag-c4"><div class="k">Skyline fit</div><div class="v">{c['rms_deg']:.2f}°</div>
             <div class="s">typical gap between photo and model skyline (score {c['score']:.3f}; lower is better)</div></div>
         </div>""", unsafe_allow_html=True)
@@ -599,7 +662,8 @@ if photo and R:
             lo = min(np.nanmin(V['angle']), np.nanmin(V['angle']) - 1)
             ax.fill_between(rel, lo - 1, V['angle'], color='#1f2a40', lw=0)
             ax.plot(rel, V['angle'], color='#7ee0ff', lw=1.4, label='elevation model skyline')
-            paz, pel = se.photo_to_world(sky['x'], sky['y'], sky['size'], c['fov'], c['pitch'], c['roll'], az0)
+            paz, pel = se.photo_to_world(sky['x'], sky['y'], sky['size'], c['fov'], c['pitch'], c['roll'], az0,
+                                         cam=R.get('cam'), tilt=c.get('tilt', 0.0))
             prel = ((paz - az0 + 180) % 360) - 180
             pm = np.where(sky['valid'], pel, np.nan)
             ax.plot(prel, pm, color='#ff9f6b', lw=1.6, label='skyline in the photo')
