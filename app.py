@@ -26,6 +26,7 @@ from PIL import Image
 
 import components as cm
 import gdrive
+import mapimage as mi
 import places
 import search as se
 import skyline as sk
@@ -639,6 +640,32 @@ if photo and R:
                      status=f"Tested {res['n_points']:,} places in {res['timing']['total']:.0f} s. Tap a number to see that place.",
                      nonce=f"res:{photo['hash']}:{sel}:{res['timing']['total']:.3f}")
         cm.show_map(rdata, key='resmap', on_select=_on_select)
+
+        # download the map as a picture
+        st.markdown('**Save the results map as a picture**')
+        i1, i2, i3 = st.columns([1.1, 1.5, 1.1], vertical_alignment='bottom')
+        img_base = i1.selectbox('Background', list(mi.TILES), key='img_base')
+        img_ext = i2.radio('Show', ['Whole search area', f'Close-up of place #{sel + 1}'], key='img_ext',
+                           horizontal=True)
+        pano_r = bool(R.get('cam'))
+        view_img = dict(
+            photo_name=photo['name'], start=st0, radius_km=R['radius'], coarse=res['coarse'], cands=cands, sel=sel,
+            ridge=V['ridge'] if V else None, cone_km=V['median_km'] if V else 8.0,
+            exif=dict(lat=info['lat'], lon=info['lon']) if info.get('lat') is not None else None,
+            verdict=({'strong': 'Strong', 'likely': 'Possible', 'unsure': 'Unsure', 'none': 'None'}[kind], text, color),
+            place_text=(f"Place #{sel + 1}: {c['lat']:.5f}, {c['lon']:.5f}  ·  "
+                        f"{'centre faces' if pano_r else 'facing'} {c['heading']:.1f}° {compass(c['heading'])}  ·  "
+                        f"{'covers' if pano_r else 'lens'} {c['fov']:.1f}°  ·  skyline fit {c['rms_deg']:.2f}°"))
+        img_key = (photo['hash'], sel, img_base, img_ext.startswith('Whole'), round(res['timing']['total'], 3))
+        img_extent = 'area' if img_ext.startswith('Whole') else 'place'
+
+        def _map_png(view=view_img, key=img_key, base=img_base, extent=img_extent):
+            return mi.render_cached(key, view, base, extent)
+        i3.download_button('Download map image (PNG)', data=_map_png, mime='image/png', on_click='ignore',
+                           file_name=f"ridgeline_map_{os.path.splitext(photo['name'])[0][:40]}_{img_extent}.png",
+                           type='primary', icon=':material/download:', width='stretch')
+        st.caption('The picture shows the heat map, the numbered places, the view and skyline ridge of the place '
+                   'selected above, and a legend. It takes a few seconds to make (map tiles are downloaded).')
         st.selectbox('Show place', list(range(len(cands))), key='sel_box',
                      format_func=lambda i: f"#{i + 1}  {cands[i]['lat']:.4f}, {cands[i]['lon']:.4f}  - fit {cands[i]['rms_deg']:.2f}°",
                      on_change=lambda: ss.__setitem__('sel', ss['sel_box']))
