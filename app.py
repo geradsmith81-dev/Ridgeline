@@ -171,6 +171,16 @@ def set_photo(data, name, source):
         ss.pop(k, None)
 
 
+def new_search_area(keep_start=False):
+    """Back to the blank search-area map, keeping the photo and the skyline line."""
+    for k in ('res', 'sel', 'sel_box', 'pic_map', 'pic_obl'):
+        ss.pop(k, None)
+    if not keep_start:
+        for k in ('start', 'place_hits', 'hit', 'search_error'):
+            ss.pop(k, None)
+        ss['q'] = ''
+
+
 def set_start(lat, lon, label, src):
     ss['start'] = dict(lat=float(lat), lon=float(lon), label=label, src=src)
     ss.pop('res', None)
@@ -598,6 +608,13 @@ if photo and R:
     st.markdown(f'<div class="ag-note"><span class="ag-pill" style="background:{color}">'
                 f'{ {"strong": "Strong", "likely": "Possible", "unsure": "Unsure", "none": "None"}[kind] }</span> '
                 f'{html.escape(text)}</div>', unsafe_allow_html=True)
+    n1, n2, _n3 = st.columns([1.1, 1.1, 1.4])
+    n1.button('Search a new area', key='new_area_top', on_click=new_search_area, width='stretch',
+              help='Clears these results and brings back the empty map at step 2, so you can pick another place '
+                   'to search around. The photo and the skyline line are kept.')
+    n2.button('Search the same place again', key='same_area_top', on_click=new_search_area, kwargs=dict(keep_start=True),
+              width='stretch', help='Clears these results but keeps the starting point, so you can change the '
+                                    'distance, the grid spacing or the skyline and search again.')
     if cands:
         sel = int(ss.get('sel', 0))
         sel = min(max(0, sel), len(cands) - 1)
@@ -796,9 +813,7 @@ if photo and R:
         st.dataframe(df, hide_index=True, width='stretch')
         st.download_button('Download these places (CSV)', df.to_csv(index=False).encode('utf-8'),
                            file_name=f"ridgeline_{os.path.splitext(photo['name'])[0][:40]}.csv", mime='text/csv')
-    if st.button('New search area'):
-        ss.pop('res', None)
-        st.rerun()
+    st.button('Search a new area', key='new_area_bottom', on_click=new_search_area)
 
 st.markdown('---')
 st.caption('Elevation: AWS Terrain Tiles (SRTM, USGS 3DEP, GMTED2010, ETOPO1 and national models). '

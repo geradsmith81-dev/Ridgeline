@@ -1,0 +1,12 @@
+/* Ridgeline skyline editor */
+.ag-ed .ag-tools { display: flex; flex-wrap: wrap; gap: 6px 8px; align-items: center; margin-bottom: 6px; }
+.ag-ed .ag-tool { background: #151d2b; color: #f4efe8; border: 1px solid #33405a; border-radius: 16px;
+                  padding: 5px 11px; font-size: 0.86rem; cursor: pointer; min-height: 34px; display: inline-flex;
+                  align-items: center; gap: 5px; }
+.ag-ed .ag-tool:has(input:checked) { border-color: #ff9f6b; background: #2a1d1a; }
+.ag-ed .ag-tool input { accent-color: #ff7a3d; }
+.ag-ed .ag-btn { background: #1d2738; color: #f4efe8; border: 1px solid #3b4a66; border-radius: 8px;
+                 padding: 5px 12px; font-size: 0.86rem; cursor: pointer; min-height: 34px; }
+.ag-ed .ag-canwrap { width: 100%; display: flex; justify-content: center; }
+.ag-ed .ag-can { border-radius: 8px; border: 1px solid #2a3550; display: block; max-width: 100%; }
+.ag-ed .ag-hint { font-size: 0.84rem; color: #dfe5ef; margin-top: 5px; }
