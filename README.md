@@ -28,5 +28,26 @@ In testing every "Strong" result lay within 0.33 km of the true camera position 
 Photos whose skyline is close (valleys, gentle hills) are harder, and the app says "Unsure" when
 several places fit about equally.
 
+
+### Hazy and faint skylines (trained model)
+The skyline finder includes a small neural network (`skymodel.py`, weights in
+`assets/sky_model.npz`, plain numpy at run time) that tells sky from land pixel by pixel using
+haze-tolerant measures (dark channel, contrast-normalised vertical edges at four scales, colour,
+texture, and comparisons with the rest of each column). Its map is blended with the photo's own
+sky/land classifier, and the line-finding step follows the place where the learned map drops
+from sky to land rather than the strongest raw edge, so a faint far ridge is not passed over for
+a crisp near one. Turn it off under "Skyline finder settings".
+
+Training data were rendered from the same elevation tiles and Esri World Imagery: eye-level and
+summit views at 46 areas, each shown in clear air, haze (visibility 3-160 km), overcast, white
+sky, sunset, dusk, black-and-white, shaded cumulus and stratus, and altitude-dependent valley
+haze. On 96 images of 4 held-out areas (Great Smoky Mountains, Tatra, Caucasus, Taiwan) the share
+of skyline columns traced within 3 px and kept rose from 50 % to 71 % (haze: 49 to 68 %; shaded
+clouds: 45 to 66 %; valley haze: 48 to 70 %) and kept-but-wrong columns fell from 40 % to 19 %.
+On real photos the gain is smaller: with the camera held at the GPS position, the share of the
+skyline matching the elevation model rose from 37 % to 43 % on 8 photos (Clingmans Dome,
+Newfound Gap, Tunnel View), and Tunnel View's match became "Strong" (36 m) instead of
+"Possible" (45 m). Scripts are in `training/`.
+
 Elevation: AWS Terrain Tiles. Maps: OpenTopoMap, OpenStreetMap, Esri. Place search: Open-Meteo.
 Leaflet (BSD-2) is bundled in `assets/`. Licence: MIT.

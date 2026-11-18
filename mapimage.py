@@ -360,8 +360,10 @@ def render(view, base='Topographic', extent='area', width=1600, height=1200, pro
     items = []
     if view.get('coarse') is not None:
         items.append(('heat', 'match: poor to good'))
-    items += [('cand', 'best places (number = rank)'), ('cone', 'view of the photo'), ('ridge', 'skyline ridge'),
-              ('circle', 'search area'), ('start', 'starting point')]
+    all_round = bool(c) and min(float(c['fov']), 359.9) >= 300.0
+    items += [('cand', 'best places (number = rank)'),
+              ('ring', 'all-round view (arrow = centre of the picture)') if all_round else ('cone', 'view of the photo'),
+              ('ridge', 'skyline ridge'), ('circle', 'search area'), ('start', 'starting point')]
     if ex:
         items.append(('star', 'photo GPS position'))
     x = 24
@@ -378,6 +380,11 @@ def render(view, base='Topographic', extent='area', width=1600, height=1200, pro
         elif kind == 'cone':
             pd.polygon([(x, fy + 16), (x + 22, fy), (x + 22, fy + 16)], fill=(120, 105, 90), outline=ACCENT)
             x += 30
+        elif kind == 'ring':
+            pd.ellipse([x, fy - 1, x + 18, fy + 17], fill=(120, 105, 90), outline=(255, 205, 156), width=2)
+            pd.line([(x + 9, fy + 8), (x + 26, fy + 8)], fill=ACCENT, width=3)
+            pd.polygon([(x + 30, fy + 8), (x + 24, fy + 4), (x + 24, fy + 12)], fill=ACCENT)
+            x += 38
         elif kind == 'ridge':
             pd.line([(x, fy + 8), (x + 24, fy + 8)], fill=PINK, width=4)
             x += 32

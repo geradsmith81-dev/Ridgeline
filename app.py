@@ -31,6 +31,7 @@ import oblique as ob
 import places
 import search as se
 import skyline as sk
+import skymodel
 import terrain as tr
 
 ss = st.session_state
@@ -122,9 +123,9 @@ def decode_photo(data):
 
 
 @st.cache_data(max_entries=6, show_spinner=False)
-def detect_skyline(h, data, smooth, edge, work_width=sk.WORK_WIDTH):
+def detect_skyline(h, data, smooth, edge, work_width=sk.WORK_WIDTH, learned=True):
     im, info = decode_photo(data)
-    d = sk.detect(im, smooth=smooth, edge_weight=edge, work_width=work_width)
+    d = sk.detect(im, smooth=smooth, edge_weight=edge, work_width=work_width, learned=learned)
     d.pop('sky', None)
     return d
 
@@ -391,13 +392,20 @@ if photo:
                            help='Higher = a calmer line that ignores small bumps; lower = follows every tree top.')
         edge = e2.slider('Follow edges', 0.0, 3.0, 1.0, 0.1, key='edgew',
                          help='How strongly the line sticks to sharp light/dark edges.')
+        learned = st.checkbox('Hazy and faint skyline helper (trained model)', value=True, key='learned',
+                              help='A small neural network trained on thousands of mountain views in haze, '
+                                   'overcast, sunset and black-and-white helps tell faint far ridges and pale '
+                                   'rock from sky, so the line is not pulled down onto a darker, nearer ridge. '
+                                   'Turn it off to use only the classic colour-and-edge finder.')
+        if learned and skymodel.get_net() is None:
+            st.caption('The trained model file (assets/sky_model.npz) is missing, so the classic finder is used.')
     with st.spinner('Finding the skyline...'):
         det = detect_skyline(photo['hash'], photo['data'], smooth, edge,
-                             sk.PANO_WORK_WIDTH if pano else sk.WORK_WIDTH)
+                             sk.PANO_WORK_WIDTH if pano else sk.WORK_WIDTH, learned)
     url, dsize = display_image(photo['hash'], photo['data'], 2400 if pano else 1400)
     W0, H0 = det['size']
     fx = dsize[0] / W0
-    nonce = f"{photo['hash']}:{smooth}:{edge}:{int(pano)}:{ss.get('edit_nonce_n', 0)}"
+    nonce = f"{photo['hash']}:{smooth}:{edge}:{int(learned)}:{int(pano)}:{ss.get('edit_nonce_n', 0)}"
     ed = ss.get('edit')
     if ed and ed.get('nonce') == nonce and len(ed['y']) == len(det['y']):
         y_disp = ed['y']

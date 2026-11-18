@@ -292,7 +292,20 @@ def _boundary_cost(ps, edge, w_edge):
     return (land_above + sky_below) / H - w_edge * edge
 
 
-def detect(im, color=None, smooth=1.0, edge_weight=1.0, iterations=3, work_width=WORK_WIDTH):
+# weight of the learned sky map (skymodel.py) in the final blend with the photo's own classifier
+LEARN_MIX = 0.8
+# share of the edge term taken from the learned map (where it drops from sky to land) instead of raw
+# image contrast - raw contrast favours a crisp near ridge over a faint, hazy far one
+LEARN_EDGE = 0.8
+
+
+def _logit(p):
+    p = np.clip(p, 1e-4, 1 - 1e-4)
+    return np.log(p / (1 - p))
+
+
+def detect(im, color=None, smooth=1.0, edge_weight=1.0, iterations=3, work_width=WORK_WIDTH, learned=True,
+           mix=None, ledge=None):
     """Find the skyline.
 
     Returns dict with x, y in ORIGINAL image pixels (one value per working column), valid mask,
@@ -312,6 +325,28 @@ def detect(im, color=None, smooth=1.0, edge_weight=1.0, iterations=3, work_width
     edge = 0.7 * up + 0.3 * gm
     edge = np.clip(edge / (np.percentile(edge, 99.5) + 1e-6), 0, 1.5)
 
+    # learned sky / land map (trained on synthetic hazy views) - optional
+    pl = None
+    net = None
+    if learned:
+        try:
+            import skymodel
+            net = skymodel.get_net()
+        except Exception:
+            net = None
+    if net is not None:
+        try:
+            pl = ndi.gaussian_filter(net.prob(rgb), 1.0)
+        except Exception:
+            pl = None
+        le = LEARN_EDGE if ledge is None else ledge
+        if pl is not None and le > 0:
+            k_ = 2
+            drop = np.zeros_like(pl)
+            drop[k_:-k_] = pl[:-2 * k_] - pl[2 * k_:]          # sky above, land below
+            edge = (1 - le) * edge + le * 1.5 * np.clip(drop, 0, 1)
+    a = LEARN_MIX if mix is None else mix
+
     top = max(2, int(0.08 * h))
     bot = max(2, int(0.12 * h))
     Xs = F[:top].reshape(-1, nf)
@@ -319,13 +354,19 @@ def detect(im, color=None, smooth=1.0, edge_weight=1.0, iterations=3, work_width
     gamma = 0.004 * smooth
     rng = np.random.default_rng(0)
     rows = np.arange(h)[:, None]
-    for it in range(max(1, iterations)):
-        ps = ndi.gaussian_filter(_Gauss2().fit(Xs, Xg).prob_sky(F), 1.0)
+    for it in range(max(1, iterations) + (1 if pl is not None else 0)):
+        if pl is not None and it == 0:
+            ps = pl                                   # first pass: learned map alone picks the seeds
+        else:
+            pa = ndi.gaussian_filter(_Gauss2().fit(Xs, Xg).prob_sky(F), 1.0)
+            ps = pa if pl is None else 1.0 / (1.0 + np.exp(-(a * _logit(pl) + (1 - a) * _logit(pa))))
         y = _dp(_boundary_cost(ps, edge, 0.35 * edge_weight), gamma)
         m = max(3, int(0.03 * h))
         sky_m = rows < (y[None, :] - m)
         gnd_m = rows > (y[None, :] + m)
         if sky_m.sum() < 200 or gnd_m.sum() < 200:
+            if pl is not None and it == 0:
+                continue                              # fall back to top / bottom seeds
             break
         Xs, Xg = F[sky_m], F[gnd_m]
         if Xs.shape[0] > 60000:
@@ -353,7 +394,7 @@ def detect(im, color=None, smooth=1.0, edge_weight=1.0, iterations=3, work_width
     sx = W0 / float(w)
     sy = H0 / float(h)
     return dict(x=(cols + 0.5) * sx, y=(y + 0.5) * sy, valid=valid, conf=conf, sky=ps,
-                work_size=(w, h), size=(W0, H0), color=bool(color))
+                work_size=(w, h), size=(W0, H0), color=bool(color), learned=pl is not None, contrast=contrast)
 
 
 # ------------------------------------------------------------------------------------------
