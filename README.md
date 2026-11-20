@@ -49,5 +49,31 @@ skyline matching the elevation model rose from 37 % to 43 % on 8 photos (Clingma
 Newfound Gap, Tunnel View), and Tunnel View's match became "Strong" (36 m) instead of
 "Possible" (45 m). Scripts are in `training/`.
 
+
+### Drone photographs
+DJI originals carry the gimbal heading, the camera tilt and the height above take-off in XMP
+(`skyline.read_drone`). The app shows them, fills in the camera height, and can hold the search
+within 15 degrees of the recorded heading (`search.locate(heading_hint=..., heading_window=...)`).
+Copies re-saved by photo software usually lose these tags.
+
+### Forested skylines: a negative result
+The matcher can add a uniform canopy height to the elevation model
+(`search.locate(canopy_try=[0, 10, 20])`, off by default). Tested on 9 geotagged photographs from
+Interior Alaska (the 13 pilot searches include duplicate copies of the same pictures) it made
+matters worse: median error rose from 706 m to 2,130 m, 6 of the 9 got worse and 3 better, and
+every search still graded "Unsure". The limitation in forest is not a constant offset — the skyline is formed by
+nearby trees whose angular height depends on their distance, which a bare-earth model cannot
+reproduce. The option is kept for experiment, not recommended.
+
+
+### Reporting a region, and checking it
+`search.good_region(coarse, tol)` returns the tested places whose score is within `tol` of the best,
+merged into rectangles with their total area; the app draws them on the Leaflet map and in the
+downloadable map image, and reports the area in square kilometres. `search.start_agreement(points)`
+measures how far apart the best places from several starting points fall; the app can re-run the
+search from two further starting points and warns when they disagree by more than a kilometre.
+Together these answer a weakness found in testing: in gentle terrain a score ratio can look
+respectable while the answer still moves kilometres with the starting point.
+
 Elevation: AWS Terrain Tiles. Maps: OpenTopoMap, OpenStreetMap, Esri. Place search: Open-Meteo.
 Leaflet (BSD-2) is bundled in `assets/`. Licence: MIT.

@@ -54,8 +54,10 @@ def haversine_km(lat1, lon1, lat2, lon2):
 class AreaTerrain:
     """Tile mosaics covering all rays from every candidate in a search area."""
 
-    def __init__(self, lat0, lon0, radius_km, max_km=120.0, bands=BANDS_COARSE, near_m=200.0, progress=None):
+    def __init__(self, lat0, lon0, radius_km, max_km=120.0, bands=BANDS_COARSE, near_m=200.0, progress=None,
+                 canopy_m=0.0):
         self.lat0, self.lon0 = lat0, lon0
+        self.canopy_m = float(canopy_m)      # trees standing on the modelled ground (metres)
         self.max_m = max_km * 1000.0
         self.near_m = near_m
         self.bands = []
@@ -96,7 +98,9 @@ class AreaTerrain:
 
     def horizons(self, lat, lon, az_step=0.5, height=1.7, progress=None, chunk=24, az=None):
         """Skyline elevation angle (deg) for each candidate (rows) at azimuths 0, az_step, ... (cols),
-        or at the given azimuth array `az`.  Also returns the distance (km) of the skyline terrain."""
+        or at the given azimuth array `az`.  Also returns the distance (km) of the skyline terrain.
+        When canopy_m is set, that height is added to the ground along every ray, because in forest
+        the line a photograph shows is the top of the trees and the elevation model has none."""
         lat = np.asarray(lat, float)
         lon = np.asarray(lon, float)
         n = lat.size
@@ -131,6 +135,8 @@ class AreaTerrain:
                     y = np.broadcast_to(cy[0] + dv[None], x.shape)
                     h = self._sample(b, x, y)
                     h = np.maximum(h, floor[ii][:, None, None])
+                    if self.canopy_m:
+                        h = h + np.float32(self.canopy_m)      # the skyline is the treetops, not the soil
                     tt = (h - h0[ii][:, None, None] - drop[None, None, :]) / d[None, None, :].astype(np.float32)
                     j = np.argmax(tt, axis=2)
                     tm = np.take_along_axis(tt, j[..., None], axis=2)[..., 0]
@@ -167,7 +173,7 @@ def is_pano(cam):
 
 
 def match(H, az_step, theta, prof, circular=True, max_roll_deg=8.0, max_dpitch_deg=8.0, clip_deg=1.0,
-          chunk=64, basis3=False, max_offset_deg=30.0):
+          chunk=64, basis3=False, max_offset_deg=30.0, az_cols=None, heading_hint=None, heading_window=None):
     """Slide the photo profile (theta deg on multiples of az_step, relative to the heading; prof = world
     elevation for an assumed tilt; NaN = ignore) over candidate skylines H (n x N).
 
@@ -199,6 +205,12 @@ def match(H, az_step, theta, prof, circular=True, max_roll_deg=8.0, max_dpitch_d
         if js.size == 0:
             raise ValueError('Azimuth window too narrow.')
         idx = js[:, None] + offs[None, :]
+    allow = None
+    if heading_hint is not None and heading_window and az_cols is not None:
+        azc = np.asarray(az_cols, float)[js]                 # azimuth of each candidate heading column
+        allow = np.abs((azc - float(heading_hint) + 180.0) % 360.0 - 180.0) <= float(heading_window)
+        if not allow.any():
+            allow = None
     c2 = np.float32(clip_deg ** 2)
     out = dict(score=np.empty(n, np.float32), j=np.empty(n, int), dpitch=np.empty(n, np.float32),
                tilt=np.zeros(n, np.float32), roll=np.empty(n, np.float32))
@@ -217,6 +229,8 @@ def match(H, az_step, theta, prof, circular=True, max_roll_deg=8.0, max_dpitch_d
         else:
             bad = (np.abs(coef[..., 0]) > max_dpitch_deg) | (np.abs(coef[..., 1]) > max_roll_deg)
         sc = np.where(bad, np.inf, sc)
+        if allow is not None:
+            sc = np.where(allow[None, :], sc, np.inf)
         jj = np.argmin(sc, axis=1)
         rows = np.arange(Hc.shape[0])
         out['score'][s0:s0 + chunk] = sc[rows, jj]
@@ -258,7 +272,7 @@ def photo_relief(sky_x, sky_y, valid, size, fov=None, cam=None):
 
 
 def match_fovs(H, az, sky_x, sky_y, valid, size, fovs, skyline_mod=None, phases=1, circular=True, pitches=(0.0,),
-               clip_deg=None, relief=None, cam=None):
+               clip_deg=None, relief=None, cam=None, heading_hint=None, heading_window=None):
     """Try several horizontal fields of view, camera tilts and sub-step heading phases; best per
     candidate.  `az` is the (evenly spaced) azimuth array of H's columns."""
     az = np.asarray(az, float)
@@ -283,7 +297,8 @@ def match_fovs(H, az, sky_x, sky_y, valid, size, fovs, skyline_mod=None, phases=
             for ph in range(phases):
                 d = ph * step / phases
                 t, p = photo_profile(th, el, valid, step, shift=d)
-                r = match(H, step, t, p, circular=circular, clip_deg=clip_f, basis3=pano)
+                r = match(H, step, t, p, circular=circular, clip_deg=clip_f, basis3=pano,
+                          az_cols=az + d, heading_hint=heading_hint, heading_window=heading_window)
                 r['score'] = r['rms'] * _kpx(W, f, cam) / relief_px
                 r['heading'] = (az[0] + r['j'] * step + d) % 360.0
                 r['pitch'] = p0 + r['dpitch']
@@ -295,6 +310,59 @@ def match_fovs(H, az, sky_x, sky_y, valid, size, fovs, skyline_mod=None, phases=
                 for k in ('score', 'heading', 'pitch', 'tilt', 'roll', 'rms', 'fov'):
                     best[k] = np.where(bt, r[k], best[k])
     return best
+
+
+def good_region(coarse, tol=0.05, max_rects=400):
+    """Where else fits almost as well: the tested places whose score is within `tol` of the best.
+
+    Returns rectangles (south, west, north, east) covering those grid cells, merged along each row of
+    latitude, plus the area they cover and the share of the searched grid.  A wide region is the
+    honest answer for gentle country: the photograph fixes an area, not a point."""
+    lat = np.asarray(coarse['lat'], float)
+    lon = np.asarray(coarse['lon'], float)
+    sc = np.asarray(coarse['score'], float)
+    ok = np.isfinite(sc)
+    if not ok.any():
+        return dict(rects=[], area_km2=0.0, n=0, share=0.0, cutoff=None)
+    lat, lon, sc = lat[ok], lon[ok], sc[ok]
+    best = float(sc.min())
+    cut = best * (1.0 + float(tol))
+    m = sc <= cut
+    step = float(coarse.get('spacing_km') or 0.3)
+    dlat = math.degrees(step * 1000.0 / R_EARTH) / 2.0
+    rows = {}
+    for la, lo in zip(lat[m], lon[m]):
+        rows.setdefault(round(la, 6), []).append(lo)
+    rects = []
+    area = 0.0
+    for la in sorted(rows):
+        dlon = math.degrees(step * 1000.0 / (R_EARTH * max(0.05, math.cos(math.radians(la))))) / 2.0
+        los = sorted(rows[la])
+        run0 = prev = los[0]
+        for lo in los[1:] + [None]:
+            if lo is not None and lo - prev <= 2.2 * dlon:
+                prev = lo
+                continue
+            rects.append([round(float(la - dlat), 6), round(float(run0 - dlon), 6),
+                          round(float(la + dlat), 6), round(float(prev + dlon), 6)])
+            w_km = (prev - run0) * math.cos(math.radians(la)) * 111.32 + step
+            area += w_km * step
+            if lo is None:
+                break
+            run0 = prev = lo
+    if len(rects) > max_rects:                      # keep the payload small for the map
+        rects = rects[:max_rects]
+    return dict(rects=rects, area_km2=round(float(area), 2), n=int(m.sum()), share=round(float(m.mean()), 4),
+                cutoff=round(float(cut), 5), best=round(float(best), 5), tol=float(tol))
+
+
+def start_agreement(points):
+    """How far apart the best places from several starting points fall (km)."""
+    pts = [(float(p['lat']), float(p['lon'])) for p in points if p]
+    if len(pts) < 2:
+        return dict(n=len(pts), max_km=None, median_km=None)
+    d = [haversine_km(a[0], a[1], b[0], b[1]) for i, a in enumerate(pts) for b in pts[i + 1:]]
+    return dict(n=len(pts), max_km=round(float(max(d)), 3), median_km=round(float(np.median(d)), 3))
 
 
 def distinct_top(lat, lon, score, k, min_sep_km):
@@ -335,14 +403,16 @@ def _photo_half_width(sky_x, sky_y, valid, size, fov, pitch, cam=None):
     return float(np.max(np.abs(th)))
 
 
-def _eval_points(A, la, lo, heading, fl, pitch, sky_x, sky_y, valid, size, az_step, pad, height, cam=None):
+def _eval_points(A, la, lo, heading, fl, pitch, sky_x, sky_y, valid, size, az_step, pad, height, cam=None,
+                 heading_hint=None, heading_window=None):
     half = None
     if pad is not None:
         half = max(_photo_half_width(sky_x, sky_y, valid, size, max(fl), pitch, cam), max(fl) / 2.0) + pad + 1.0
     if pad is None or half >= 178.0:     # whole circle
         h = A.horizons(np.asarray(la, float), np.asarray(lo, float), az_step=az_step, height=height)
         m = match_fovs(h['angle'], h['az'], sky_x, sky_y, valid, size, fl, None, phases=2, circular=True,
-                       pitches=(round(float(pitch), 2),), cam=cam)
+                       pitches=(round(float(pitch), 2),), cam=cam,
+                       heading_hint=heading_hint, heading_window=heading_window)
         return m, h
     az = (heading - half + np.arange(0.0, 2 * half + 1e-9, az_step)) % 360.0
     h = A.horizons(np.asarray(la, float), np.asarray(lo, float), az=az, height=height)
@@ -352,7 +422,7 @@ def _eval_points(A, la, lo, heading, fl, pitch, sky_x, sky_y, valid, size, az_st
 
 
 def _descend(A, c, fl_fn, sky_x, sky_y, valid, size, step_km, min_step_km, az_step, pad, height, max_iter=12,
-             cam=None):
+             cam=None, heading_hint=None, heading_window=None):
     """Pattern search from candidate c (dict with lat, lon, heading, pitch, fov, score): evaluate the
     3 x 3 neighbourhood, move to the best point, halve the step when the centre is best."""
     cur = dict(c)
@@ -366,7 +436,7 @@ def _descend(A, c, fl_fn, sky_x, sky_y, valid, size, step_km, min_step_km, az_st
         fl = fl_fn(cur)
         try:
             m, h = _eval_points(A, la, lo, cur['heading'], fl, cur['pitch'], sky_x, sky_y, valid, size, az_step, pad,
-                                height, cam=cam)
+                                height, cam=cam, heading_hint=heading_hint, heading_window=heading_window)
         except ValueError:
             break
         j = int(np.argmin(m['score']))
@@ -385,7 +455,7 @@ PANO_FOV_RANGE = (90.0, 360.0)
 
 def locate(sky_x, sky_y, valid, size, lat0, lon0, radius_km=10.0, spacing_km=0.3, hfov=None,
            fov_range=None, max_km=120.0, height=1.7, n_top=30, n_fine=6, progress=None, skyline_mod=None,
-           cam=None):
+           cam=None, canopy_m=0.0, canopy_try=None, heading_hint=None, heading_window=None):
     """Full coarse-to-fine search.  Returns dict(coarse=..., candidates=[...], timing=...).
     cam: None for a normal (pinhole) photo, or dict(proj='cyl'|'equi', y0=horizon row or None,
     ref_fov=...) for a panorama."""
@@ -400,7 +470,9 @@ def locate(sky_x, sky_y, valid, size, lat0, lon0, radius_km=10.0, spacing_km=0.3
     t0 = time.time()
     lat, lon = grid_points(lat0, lon0, radius_km, spacing_km)
     az_c = 1.0
-    A = AreaTerrain(lat0, lon0, radius_km + spacing_km, max_km, BANDS_COARSE,
+    canopy_list = [float(c) for c in (canopy_try or [])] or None
+    coarse_canopy = float(np.median(canopy_list)) if canopy_list else float(canopy_m)
+    A = AreaTerrain(lat0, lon0, radius_km + spacing_km, max_km, BANDS_COARSE, canopy_m=coarse_canopy,
                     progress=lambda m, f: prog(m, 0.04 * f))
     T['coarse_tiles'] = time.time() - t0
     hz = A.horizons(lat, lon, az_step=az_c, height=height, progress=lambda m, f: prog(m, 0.04 + 0.46 * f))
@@ -410,7 +482,8 @@ def locate(sky_x, sky_y, valid, size, lat0, lon0, radius_km=10.0, spacing_km=0.3
     prog(f'Matching the photo against {lat.size:,} places' + ('' if hfov else f' and {len(fovs)} {what}'), 0.5)
     t1 = time.time()
     pitches = (0.0,) if pano else (COARSE_PITCHES if hfov else COARSE_PITCHES_UNKNOWN_FOV)
-    mc = match_fovs(hz['angle'], hz['az'], sky_x, sky_y, valid, size, fovs, None, phases=2, pitches=pitches, cam=cam)
+    mc = match_fovs(hz['angle'], hz['az'], sky_x, sky_y, valid, size, fovs, None, phases=2, pitches=pitches, cam=cam,
+                    heading_hint=heading_hint, heading_window=heading_window)
     T['coarse_match'] = time.time() - t1
     coarse = dict(lat=lat, lon=lon, score=mc['score'], heading=mc['heading'], fov=mc['fov'],
                   ground=hz['ground'], az_step=az_c, spacing_km=spacing_km)
@@ -433,7 +506,7 @@ def locate(sky_x, sky_y, valid, size, lat0, lon0, radius_km=10.0, spacing_km=0.3
         c = dict(lat=float(lat[i]), lon=float(lon[i]), heading=float(mc['heading'][i]), pitch=float(mc['pitch'][i]),
                  fov=float(mc['fov'][i]), score=float(mc['score'][i]), coarse_score=float(mc['score'][i]))
         lvl1.append(_descend(A, c, fl1, sky_x, sky_y, valid, size, spacing_km / 2.0, max(0.03, spacing_km / 8.0),
-                             0.5, None, height, cam=cam))
+                             0.5, None, height, cam=cam, heading_hint=heading_hint, heading_window=heading_window))
     lvl1.sort(key=lambda c: c['score'])
     T['refine1'] = time.time() - t2
     uniq = []
@@ -447,13 +520,26 @@ def locate(sky_x, sky_y, valid, size, lat0, lon0, radius_km=10.0, spacing_km=0.3
     lo_ = np.array([c['lon'] for c in best])
     cl, cn = float(la_.mean()), float(lo_.mean())
     rad = float(max(haversine_km(cl, cn, la_, lo_).max(), 0.1)) + 0.3
-    AF = AreaTerrain(cl, cn, rad, max_km, BANDS_FINE)
+    AF = AreaTerrain(cl, cn, rad, max_km, BANDS_FINE, canopy_m=coarse_canopy)
     wide = pano and max(c['fov'] for c in best) / 2.0 + 9.0 >= 178.0
     cands = []
     for k, c in enumerate(best):
         prog(f'Fine check of the best places ({k + 1} of {len(best)})', 0.82 + 0.17 * k / max(1, len(best)))
-        cands.append(_descend(AF, c, fl2, sky_x, sky_y, valid, size, 0.04, 0.01, 0.2 if wide else 0.1,
-                              None if wide else 8.0, height, cam=cam))
+        if canopy_list:
+            trials = []
+            for cm in canopy_list:
+                AF.canopy_m = cm
+                t = _descend(AF, dict(c), fl2, sky_x, sky_y, valid, size, 0.04, 0.01, 0.2 if wide else 0.1,
+                             None if wide else 8.0, height, cam=cam, heading_hint=heading_hint, heading_window=heading_window)
+                t['canopy_m'] = cm
+                trials.append(t)
+            AF.canopy_m = coarse_canopy
+            cands.append(min(trials, key=lambda t: t['score']))
+        else:
+            c2 = _descend(AF, c, fl2, sky_x, sky_y, valid, size, 0.04, 0.01, 0.2 if wide else 0.1,
+                          None if wide else 8.0, height, cam=cam, heading_hint=heading_hint, heading_window=heading_window)
+            c2['canopy_m'] = coarse_canopy
+            cands.append(c2)
     T['refine2'] = time.time() - t3
     cands.sort(key=lambda c: c['score'])
     out = []
@@ -463,6 +549,7 @@ def locate(sky_x, sky_y, valid, size, lat0, lon0, radius_km=10.0, spacing_km=0.3
     out.sort(key=lambda c: c['score'])
     for c in out:
         c.setdefault('tilt', 0.0)
+        c.setdefault('canopy_m', coarse_canopy)
     T['total'] = time.time() - t0
     prog('Done', 1.0)
     return dict(coarse=coarse, candidates=out[:15], timing=T, tiles=A.tiles + AF.tiles,
@@ -478,11 +565,11 @@ def _pano_geom(size, fov, cam):
 
 
 def view_of(lat, lon, heading, fov, pitch, roll, size, n_cols, max_km=120.0, height=1.7, pad=25.0, step=0.05,
-            cam=None, tilt=0.0):
+            cam=None, tilt=0.0, canopy_m=0.0):
     """What the elevation model shows from a candidate: the skyline projected into the photo (pixel row
     per column, None outside), the panorama around the view, and the ridge points (lat/lon) seen."""
     W, Hh = size
-    A = AreaTerrain(lat, lon, 0.05, max_km, BANDS_FINE)
+    A = AreaTerrain(lat, lon, 0.05, max_km, BANDS_FINE, canopy_m=canopy_m)
     half = min(180.0, fov / 2.0 + pad)
     if half >= 180.0:
         rel = np.arange(-180.0, 180.0, step)

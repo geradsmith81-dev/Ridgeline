@@ -496,14 +496,41 @@ if photo:
             st.caption('Do not crop the sides of the panorama after stitching, or the angle no longer fits. '
                        'Small up-down shifts and a slightly tilted horizon are found by the app.')
         cam = dict(proj=proj, y0=y0, ref_fov=hfov or 180.0)
+    drone = info.get('drone') or {}
+    use_drone_heading = False
+    if drone:
+        bits = []
+        if drone.get('heading') is not None:
+            bits.append(f"facing {drone['heading']:.0f}°")
+        if drone.get('pitch') is not None:
+            bits.append(f"camera tilted {abs(drone['pitch']):.0f}° "
+                        f"{'down' if drone['pitch'] < 0 else 'up'}")
+        if drone.get('rel_alt') is not None:
+            bits.append(f"{drone['rel_alt']:.0f} m above the take-off point")
+        st.markdown('<div class="ag-note"><b>This picture carries drone flight data.</b> '
+                    + html.escape(', '.join(bits)) + '.</div>', unsafe_allow_html=True)
+        if drone.get('heading') is not None:
+            use_drone_heading = st.checkbox('Search only near the direction the drone recorded (±15°)',
+                                            value=True, key='drone_hd',
+                                            help='The drone stores which way the camera pointed. Keeping this on '
+                                                 'makes the search quicker and stops it settling on a place that '
+                                                 'only fits if the camera faced some other way. Switch it off if '
+                                                 'the picture has been rotated or the compass looks wrong.')
     with st.expander('More settings: camera height, distance of the skyline'):
         m1, m2 = st.columns(2)
-        cam_h = m1.number_input('Camera height above the ground (m)', 0.0, 3000.0, 1.7, 0.5, key='cam_h',
-                                help='Raise it for a photo from a tower, building, bridge or drone.')
+        h_default = 1.7
+        if drone.get('rel_alt') is not None and drone['rel_alt'] > 2:
+            h_default = round(float(drone['rel_alt']), 1)
+        cam_h = m1.number_input('Camera height above the ground (m)', 0.0, 3000.0, h_default, 0.5,
+                                key=f"cam_h_{photo['hash']}",
+                                help='Raise it for a photo from a tower, building, bridge or drone. For a drone '
+                                     'picture this is filled in from the height the drone recorded above its '
+                                     'take-off point.')
         max_km = m2.select_slider('Mountains up to this far away are included (km)', [40, 60, 80, 120, 160, 200],
                                   120, key='max_km')
 else:
     cam_h, max_km = 1.7, 120
+    drone, use_drone_heading = {}, False
     cam = None
     pano = False
 
@@ -517,8 +544,23 @@ if photo:
         st.info('Choose a starting place in step 2 first.')
     elif sky is not None and sky['valid'].sum() < 20:
         st.warning('There is too little skyline to work with. Use "Draw skyline" or "Is skyline" on the picture.')
+    with st.expander('How the answer is reported'):
+        o1, o2 = st.columns(2)
+        show_region = o1.checkbox('Show the area that fits almost as well', value=True, key='show_region',
+                                  help='Draws every tested place whose skyline fit is close to the best one. '
+                                       'In gentle country that area can be square kilometres wide, which is the '
+                                       'honest answer: the photograph fixes a region, not a point.')
+        region_tol = o1.select_slider('How close counts as "almost as well"', [0.05, 0.10, 0.25],
+                                      value=0.10, key='region_tol', format_func=lambda v: f'within {v * 100:.0f} %',
+                                      help='A wider setting shows more of the places the photograph cannot rule out.')
+        repeat_starts = o2.checkbox('Check the answer from other starting points (about 3x slower)',
+                                    value=False, key='repeat_starts',
+                                    help='Runs the same search again from two more starting points nearby. If the '
+                                         'three answers land in the same place the result is dependable; if they '
+                                         'scatter, the landscape does not fix the position, whatever the score says.')
     params = (photo['hash'], start['lat'] if start else None, start['lon'] if start else None, radius, spacing,
-              round(hfov, 3) if hfov else None, cam_h, max_km, str(cam), hashlib.sha1(np.nan_to_num(sky['y']).tobytes()
+              round(hfov, 3) if hfov else None, cam_h, max_km, str(cam), int(bool(use_drone_heading)),
+              int(bool(repeat_starts)), hashlib.sha1(np.nan_to_num(sky['y']).tobytes()
               + sky['valid'].tobytes()).hexdigest()[:12] if sky else None)
     if st.button('Search for the place', type='primary', disabled=not ready, width='stretch'):
         bar = st.progress(0.0, text='Starting...')
@@ -527,10 +569,32 @@ if photo:
         def prog(msg, frac):
             bar.progress(min(1.0, max(0.0, frac)), text=f'{msg} - {time.time() - t0:.0f} s')
         try:
+            hd_hint = drone.get('heading') if (use_drone_heading and drone) else None
             res = se.locate(sky['x'], sky['y'], sky['valid'], sky['size'], start['lat'], start['lon'],
                             radius_km=radius, spacing_km=spacing, hfov=hfov, max_km=max_km, height=cam_h,
-                            progress=prog, skyline_mod=sk, cam=cam)
-            ss['res'] = dict(res=res, params=params, start=dict(start), hfov=hfov, radius=radius, cam=cam)
+                            progress=prog, skyline_mod=sk, cam=cam,
+                            heading_hint=hd_hint, heading_window=(15.0 if hd_hint is not None else None))
+            checks = None
+            if repeat_starts:
+                pts = [res['candidates'][0] if res['candidates'] else None]
+                for k_, brg in enumerate((60.0, 240.0)):
+                    off = min(2.0, max(0.5, radius / 4.0))
+                    la2, lo2 = se._offset(start['lat'], start['lon'],
+                                          off * math.sin(math.radians(brg)), off * math.cos(math.radians(brg)))
+
+                    def prog2(msg, frac, k=k_):
+                        bar.progress(min(1.0, max(0.0, (1 + k + frac) / 3.0)),
+                                     text=f'Checking from another starting point ({k + 1} of 2): {msg}'
+                                          f' - {time.time() - t0:.0f} s')
+                    r2 = se.locate(sky['x'], sky['y'], sky['valid'], sky['size'], la2, lo2,
+                                   radius_km=radius, spacing_km=spacing, hfov=hfov, max_km=max_km, height=cam_h,
+                                   progress=prog2, skyline_mod=sk, cam=cam,
+                                   heading_hint=hd_hint, heading_window=(15.0 if hd_hint is not None else None))
+                    pts.append(r2['candidates'][0] if r2['candidates'] else None)
+                checks = se.start_agreement(pts)
+                checks['places'] = [dict(lat=round(p['lat'], 6), lon=round(p['lon'], 6)) for p in pts if p]
+            ss['res'] = dict(res=res, params=params, start=dict(start), hfov=hfov, radius=radius, cam=cam,
+                             checks=checks)
             ss['sel'] = 0
             ss['sel_box'] = 0
         except (tr.TerrainError, ValueError) as e:
@@ -562,7 +626,7 @@ def heat_overlay(c, st0):
         'rl', ['#20304d', '#5b3a8c', '#c2457a', '#ff9f6b', '#ffe680'])
     rgba = cmap(v ** 1.5)
     rgba[..., 3] = np.where(fin, 0.12 + 0.83 * v ** 1.2, 0)
-    img = Image.fromarray((rgba * 255).astype(np.uint8), 'RGBA')
+    img = Image.fromarray(np.nan_to_num(rgba * 255.0, nan=0.0).astype(np.uint8), 'RGBA')
     b = io.BytesIO()
     img.save(b, format='PNG')
     url = 'data:image/png;base64,' + base64.b64encode(b.getvalue()).decode('ascii')
@@ -608,6 +672,29 @@ if photo and R:
     st.markdown(f'<div class="ag-note"><span class="ag-pill" style="background:{color}">'
                 f'{ {"strong": "Strong", "likely": "Possible", "unsure": "Unsure", "none": "None"}[kind] }</span> '
                 f'{html.escape(text)}</div>', unsafe_allow_html=True)
+    region = None
+    if ss.get('show_region', True):
+        try:
+            region = se.good_region(res['coarse'], tol=float(ss.get('region_tol', 0.10)))
+        except Exception:
+            region = None
+    if region and region['rects']:
+        st.caption(f"Places that fit within {region['tol'] * 100:.0f} % of the best one cover about "
+                   f"{region['area_km2']:.2f} km\u00b2 "
+                   f"({region['n']} of {len(res['coarse']['score']):,} places tested). The green patch on the map is "
+                   'that area. Read it as the region the skyline fixes; the numbered point is only its best place.')
+    checks = R.get('checks')
+    if checks and checks.get('max_km') is not None:
+        mk = checks['max_km']
+        if mk <= 0.3:
+            st.success(f'Searches from {checks["n"]} different starting points agreed to within '
+                       f'{mk * 1000:.0f} m of each other.')
+        elif mk <= 1.0:
+            st.info(f'Searches from {checks["n"]} different starting points landed within {mk:.2f} km of each other.')
+        else:
+            st.warning(f'Searches from {checks["n"]} different starting points disagreed by {mk:.1f} km. '
+                       'The landscape does not fix this position: treat the place below as unplaced, whatever '
+                       'the score says.')
     n1, n2, _n3 = st.columns([1.1, 1.1, 1.4])
     n1.button('Search a new area', key='new_area_top', on_click=new_search_area, width='stretch',
               help='Clears these results and brings back the empty map at step 2, so you can pick another place '
@@ -662,7 +749,7 @@ if photo and R:
                    cone_km=(V['median_km'] if (V and i == sel) else 10.0),
                    ridge=(V['ridge'] if (V and i == sel) else None)) for i, x in enumerate(cands)]
         rdata = dict(mode='results', start=st0, radius_km=R['radius'], heat=heat_overlay(res['coarse'], st0),
-                     cands=mc, sel=sel, zoom=12,
+                     cands=mc, sel=sel, zoom=12, regions=(region or {}).get('rects') or [],
                      exif=dict(lat=info['lat'], lon=info['lon']) if info.get('lat') is not None else None,
                      status=f"Tested {res['n_points']:,} places in {res['timing']['total']:.0f} s. Tap a number to see that place.",
                      nonce=f"res:{photo['hash']}:{sel}:{res['timing']['total']:.3f}")
@@ -672,6 +759,7 @@ if photo and R:
         pano_r = bool(R.get('cam'))
         view_img = dict(
             photo_name=photo['name'], start=st0, radius_km=R['radius'], coarse=res['coarse'], cands=cands, sel=sel,
+            region=region,
             ridge=V['ridge'] if V else None, cone_km=V['median_km'] if V else 8.0,
             exif=dict(lat=info['lat'], lon=info['lon']) if info.get('lat') is not None else None,
             verdict=({'strong': 'Strong', 'likely': 'Possible', 'unsure': 'Unsure', 'none': 'None'}[kind], text, color),
@@ -709,7 +797,7 @@ if photo and R:
         img_ext = i2.radio('Show', ['Whole search area', f'Close-up of place #{sel + 1}'], key='img_ext',
                            horizontal=True)
         img_extent = 'area' if img_ext.startswith('Whole') else 'place'
-        img_key = ('map', photo['hash'], sel, img_base, img_extent, run_id)
+        img_key = ('map', photo['hash'], sel, img_base, img_extent, run_id, bool(region and region['rects']))
         if i3.button('Draw map image', key='draw_map', icon=':material/map:', width='stretch'):
             png, secs = draw_with_progress('map image', lambda p: mi.render_cached(img_key, view_img, img_base,
                                                                                     img_extent, progress=p))

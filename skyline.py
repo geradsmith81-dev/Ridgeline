@@ -92,6 +92,42 @@ def read_gpano(raw):
     return out
 
 
+def read_drone(raw):
+    """Camera pose a drone wrote into the file (DJI XMP): heading, tilt, roll, height above take-off.
+
+    DJI stores the gimbal angles the camera was actually held at, so the search does not have to
+    find the heading from scratch.  Returns None when the tags are absent (most cameras, and copies
+    that have been re-saved by photo software)."""
+    if not raw:
+        return None
+    i = raw.find(b'drone-dji')
+    if i < 0:
+        return None
+    try:
+        blob = raw[max(0, i - 200):i + 3000].decode('utf-8', 'replace')
+    except Exception:
+        return None
+    d = dict(re.findall(r'drone-dji:([A-Za-z]+)\s*=\s*["\']?([^"\'<\s]+)', blob))
+    if not d:
+        return None
+
+    def num(k):
+        try:
+            return float(d[k])
+        except (KeyError, TypeError, ValueError):
+            return None
+
+    yaw = num('GimbalYawDegree')
+    out = dict(heading=None if yaw is None else yaw % 360.0,
+               pitch=num('GimbalPitchDegree'),              # negative = looking down
+               roll=num('GimbalRollDegree'),
+               rel_alt=num('RelativeAltitude'),             # metres above the take-off point
+               abs_alt=num('AbsoluteAltitude'),
+               flight_yaw=num('FlightYawDegree'),
+               maker=(d.get('CameraSerialNumber') and 'DJI') or 'DJI')
+    return out if any(out[k] is not None for k in ('heading', 'pitch', 'rel_alt')) else None
+
+
 def pano_from_gpano(gp, w, h):
     """Angle of view (deg), projection and horizon row (in this image's pixels) from GPano, or None."""
     try:
@@ -132,6 +168,7 @@ def load_image(data):
     im = Image.open(data)
     info = exif_info(im)
     info['gpano'] = read_gpano(raw)
+    info['drone'] = read_drone(raw)
     try:
         im = ImageOps.exif_transpose(im)
     except Exception:

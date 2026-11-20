@@ -248,6 +248,16 @@ def render(view, base='Topographic', extent='area', width=1600, height=1200, pro
         if x2 - x1 > 2 and y2 - y1 > 2:
             hm = hm.resize((int(x2 - x1), int(y2 - y1)), Image.BILINEAR)
             ov.alpha_composite(hm, (int(x1), int(y1)))
+    # places that fit almost as well as the best one
+    rects = (view.get('region') or {}).get('rects') or []
+    if rects:
+        layer = Image.new('RGBA', ov.size, (0, 0, 0, 0))
+        dl = ImageDraw.Draw(layer)
+        for s_lat, w_lon, n_lat, e_lon in rects:
+            x1, y1 = P(n_lat, w_lon)
+            x2, y2 = P(s_lat, e_lon)
+            dl.rectangle([min(x1, x2), min(y1, y2), max(x1, x2), max(y1, y2)], fill=(126, 224, 200, 80))
+        ov.alpha_composite(layer)
     # search circle
     az = np.arange(0, 361, 2.0)
     cla, clo = tr.destination(st0['lat'], st0['lon'], az, view['radius_km'] * 1000.0)
@@ -361,6 +371,8 @@ def render(view, base='Topographic', extent='area', width=1600, height=1200, pro
     if view.get('coarse') is not None:
         items.append(('heat', 'match: poor to good'))
     all_round = bool(c) and min(float(c['fov']), 359.9) >= 300.0
+    if rects:
+        items.append(('region', 'area that fits almost as well'))
     items += [('cand', 'best places (number = rank)'),
               ('ring', 'all-round view (arrow = centre of the picture)') if all_round else ('cone', 'view of the photo'),
               ('ridge', 'skyline ridge'), ('circle', 'search area'), ('start', 'starting point')]
@@ -379,6 +391,9 @@ def render(view, base='Topographic', extent='area', width=1600, height=1200, pro
             x += 26
         elif kind == 'cone':
             pd.polygon([(x, fy + 16), (x + 22, fy), (x + 22, fy + 16)], fill=(120, 105, 90), outline=ACCENT)
+            x += 30
+        elif kind == 'region':
+            pd.rectangle([x, fy, x + 22, fy + 16], fill=(96, 150, 136), outline=(126, 224, 200))
             x += 30
         elif kind == 'ring':
             pd.ellipse([x, fy - 1, x + 18, fy + 17], fill=(120, 105, 90), outline=(255, 205, 156), width=2)

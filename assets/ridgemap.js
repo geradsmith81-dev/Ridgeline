@@ -103,6 +103,10 @@ function update(S, d) {
   if (d.heat) {
     L.imageOverlay(d.heat.url, d.heat.bounds, { opacity: 0.62, interactive: false }).addTo(S.heatLayer);
   }
+  (d.regions || []).forEach((r) => {        // places that fit almost as well as the best one
+    L.rectangle([[r[0], r[1]], [r[2], r[3]]], { color: '#7ee0c8', weight: 1, opacity: 0.85,
+      fillColor: '#7ee0c8', fillOpacity: 0.3, interactive: false }).addTo(S.heatLayer);
+  });
   if (d.exif) {
     L.marker([d.exif.lat, d.exif.lon], { icon: L.divIcon({ className: 'ag-cand-wrap', iconSize: [26, 26], iconAnchor: [13, 13],
       html: '<span class="ag-exif">&#9733;</span>' }) })
