@@ -18,6 +18,9 @@ import streamlit as st
 st.set_page_config(page_title='Ridgeline', page_icon='assets/ridgeline_icon.png', layout='wide',
                    initial_sidebar_state='collapsed')
 
+import desktop as dk
+dk.require_password(st)   # only when shared on the local network; asks visitors from other devices
+
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
@@ -908,5 +911,6 @@ st.caption('Elevation: AWS Terrain Tiles (SRTM, USGS 3DEP, GMTED2010, ETOPO1 and
            'Place search: Open-Meteo / GeoNames. Maps: OpenTopoMap, OpenStreetMap, Esri. '
            'The match is only as good as the skyline: photos with distinctive hills or mountains work best; '
            'flat land, sea horizons and views blocked by trees cannot be placed.')
+dk.desktop_controls(st, [tr.CACHE_DIR, mi.CACHE], on_cleared=mi._CACHE.clear)
 st.markdown('<div class="ag-credit">Developed by Gerad Smith and Marco Sugamiele for the '
             '<i>Ancestors in Photo Negative</i> project</div>', unsafe_allow_html=True)

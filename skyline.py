@@ -38,7 +38,13 @@ except Exception:
 
 WORK_WIDTH = 900
 PANO_WORK_WIDTH = 2400
-Image.MAX_IMAGE_PIXELS = 400_000_000      # stitched panoramas can be 60-100 megapixels
+# Size limits. Pictures above MAX_PIXELS are refused (a 200-megapixel picture needs about 600 MB just
+# to hold in memory). Larger accepted pictures are reduced to MAX_SIDE pixels on the long side as they
+# are read: the skyline finder works at 900-2400 px, stitched panoramas are often 60-100 megapixels,
+# and 6000 px keeps the 3000 px width that marks a 360-degree photo.
+MAX_PIXELS = 200_000_000
+MAX_SIDE = 6000
+Image.MAX_IMAGE_PIXELS = MAX_PIXELS
 DIAG_35MM = math.hypot(36.0, 24.0)       # 43.27 mm
 
 
@@ -166,13 +172,26 @@ def load_image(data):
     if raw is not None:
         data = io.BytesIO(raw)
     im = Image.open(data)
+    w0, h0 = im.size
+    if w0 * h0 > MAX_PIXELS:
+        raise ValueError(f'the picture is {w0 * h0 / 1e6:,.0f} megapixels; Ridgeline accepts pictures of up to '
+                         f'{MAX_PIXELS / 1e6:,.0f} megapixels')
     info = exif_info(im)
     info['gpano'] = read_gpano(raw)
     info['drone'] = read_drone(raw)
+    info['orig_width'], info['orig_height'] = w0, h0
+    if max(w0, h0) > MAX_SIDE:
+        f = MAX_SIDE / float(max(w0, h0))
+        try:
+            im.draft('RGB', (int(w0 * f), int(h0 * f)))   # JPEG: decode straight at a reduced size
+        except Exception:
+            pass
     try:
         im = ImageOps.exif_transpose(im)
     except Exception:
         pass
+    if max(im.size) > MAX_SIDE:
+        im.thumbnail((MAX_SIDE, MAX_SIDE), Image.LANCZOS)
     info['is_color'] = is_color_image(im)
     im = im.convert('RGB')
     info['width'], info['height'] = im.size

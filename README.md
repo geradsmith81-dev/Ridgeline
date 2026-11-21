@@ -10,8 +10,20 @@ with the photo's view cone and the predicted skyline ridge.
 Made in the style of [Afterglow](https://github.com/geradsmith81-dev/afterglow-planner).
 
 ## Run on your computer
-    pip install -r requirements.txt
-    streamlit run app.py
+    pip install --require-hashes --only-binary :all: -r requirements.txt
+    streamlit run app.py --server.address 127.0.0.1
+
+`requirements.txt` pins every component, including indirect ones, to an exact tested version
+with its published SHA-256 checksums, so pip refuses anything that differs. The readable list of
+direct requirements is `requirements.in`. To update, edit `requirements.in` and regenerate:
+
+    uv pip compile requirements.in --universal --python-version 3.12 --generate-hashes --only-binary :all: -o requirements.txt
+
+Tested with Python 3.15.2 on Windows. The Windows desktop package (a separate zip) adds a
+windowless launcher, a Quit button, automatic shutdown when the window closes, a check of the
+program files at every start, an optional password-protected "share on this network" mode, and a
+"Clear stored map data" button. `desktop.py` holds that behaviour; it is inert here because only
+the desktop launcher sets `RIDGELINE_DESKTOP=1`.
 
 ## Deploy on Streamlit Community Cloud
 1. Upload all files to a new GitHub repository (e.g. `ridgeline`).
@@ -21,6 +33,16 @@ Made in the style of [Afterglow](https://github.com/geradsmith81-dev/afterglow-p
 
 The online version is slower than a PC (Community Cloud gives one shared CPU), so use a smaller
 search radius there.
+
+## Security and privacy notes
+* Pictures over 200 megapixels are refused, and larger accepted pictures are reduced to 6,000
+  pixels on the long side as they are read, so one very large upload cannot exhaust the server's
+  memory.
+* Text from users and from Google Drive is HTML-escaped wherever the page renders HTML. Google
+  Drive links are reduced to a file ID and sent only to Google's own addresses; downloads are capped
+  at 60 MB and uploads at 80 MB. Streamlit usage statistics are off.
+* Elevation and map tile requests tell the tile servers which areas are being searched, and the
+  server's tile cache records the same. On Community Cloud that cache lives on the app's server.
 
 ## Accuracy
 In testing every "Strong" result lay within 0.33 km of the true camera position (7 of 8 within

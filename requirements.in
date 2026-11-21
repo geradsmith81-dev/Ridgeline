@@ -1,0 +1,9 @@
+streamlit==1.67.0
+numpy==2.5.5
+scipy
+requests==2.34.2
+pillow==13.0.0
+pillow-heif
+matplotlib==3.11.2
+pandas==3.1.1
+geonamescache==3.0.2
